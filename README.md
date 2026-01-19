@@ -1,6 +1,6 @@
 # Veridoc: Conditional Forgery Detection System
 
-![Veridoc Header](readme/header.jpg)
+![Veridoc Header](readme/header.png)
 
 > **A Dual-Modality Forensic Engine on Google Cloud Platform**
 
@@ -20,7 +20,7 @@ The system operates on a **Conditional Logic Model**, utilizing a Python (FastAP
 * **Target:** Native PDFs (selectable text, structured binary data).
 * **Methodology:** Deterministic Binary File Structure Parsing.
 
-![Pipeline A Architecture](readme/pipe1.jpg)
+![Pipeline A Architecture](readme/pipe1.png)
 
 #### Key Techniques:
 1.  **Incremental Update Detection (Chronology):** We scan raw file bytes for multiple `%%EOF` markers. A count > 1 indicates post-creation editing, revealing that new content was appended to the file tail rather than overwriting the original.
@@ -33,7 +33,7 @@ The system operates on a **Conditional Logic Model**, utilizing a Python (FastAP
 * **Target:** Scanned documents, JPEGs, Screenshots (Raster data).
 * **Methodology:** Statistical Signal Processing & Computer Vision.
 
-![Pipeline B Architecture](readme/pipe2.jpg)
+![Pipeline B Architecture](readme/pipe2.png)
 
 #### Key Techniques:
 1.  **DCT Quantization Analysis:** JPEG compression relies on 8x8 pixel grids. A "Comb Effect" (gaps in the histogram) rather than a smooth bell curve indicates "Double Quantization," proving the image was re-saved after editing.
@@ -70,7 +70,7 @@ The architecture is built on a **Serverless First** principle using Google Cloud
 
 ## 📈 Expected Impact
 
-![Impact Metrics](readme/impact.jpg)
+![Impact Metrics](readme/impact.png)
 
 * **Defensible Verification:** Moves analysis from subjective suspicion to mathematical proof (e.g., XRef evidence), creating legally defensible audit trails.
 * **Explainable AI (XAI):** Provides granular "Reasoning Traces" (e.g., "Flagged due to Double Quantization") rather than black-box scores.
