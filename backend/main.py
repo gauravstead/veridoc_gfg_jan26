@@ -4,6 +4,10 @@ import uvicorn
 import os
 import shutil
 import uuid
+import asyncio
+import time
+from contextlib import asynccontextmanager
+
 from pipelines import determine_pipeline, PipelineType, analyze_structural, analyze_visual, analyze_cryptographic
 from reasoning import run_semantic_reasoning
 from pypdf import PdfReader
@@ -12,7 +16,45 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="VeriDoc API", description="Document Forgery Detection System")
+UPLOAD_DIR = "uploads"
+
+async def cleanup_cron():
+    """Background task to delete files older than 15 minutes."""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            now = time.time()
+            cutoff = now - 900  # 15 minutes
+            
+            if os.path.exists(UPLOAD_DIR):
+                for filename in os.listdir(UPLOAD_DIR):
+                    file_path = os.path.join(UPLOAD_DIR, filename)
+                    if os.path.isfile(file_path):
+                        try:
+                            file_mtime = os.path.getmtime(file_path)
+                            if file_mtime < cutoff:
+                                os.remove(file_path)
+                                print(f"Deleted old file: {filename}")
+                        except Exception as e:
+                            print(f"Error checking/deleting {filename}: {e}")
+        except Exception as e:
+             print(f"Error in cleanup loop: {e}")
+             await asyncio.sleep(60)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Run cleanup task
+    task = asyncio.create_task(cleanup_cron())
+    yield
+    # Shutdown: Cancel task
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(title="VeriDoc API", description="Document Forgery Detection System", lifespan=lifespan)
+
 
 # GCS Configuration
 
@@ -33,8 +75,8 @@ def upload_to_gcs(source_file_name, destination_blob_name):
         print(f"GCS Upload Failed: {e}")
         return None
 
-UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 
 # CORS Setup
 # Explicitly list allowed origins to support allow_credentials=True

@@ -1,4 +1,6 @@
 import vertexai
+from datetime import datetime
+
 from vertexai.generative_models import GenerativeModel, Part, SafetySetting
 import json
 import os
@@ -42,9 +44,11 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf"):
         Return ONLY the JSON object. Do not add markdown formatting.
         """
         
-        system_instruction = """
+        system_instruction = f"""
         You are VeriDoc-AI, an expert forensic document auditor. 
+        Current Date: {datetime.now().strftime('%Y-%m-%d')}
         Analyze the provided document for signs of forgery, manipulation, or inconsistencies.
+        If the document contains dates in the future relative to the Current Date, flag them only if they are unreasonable (e.g., a certificate dated 2050). Future dates within the current year or slightly ahead might be valid depending on context, but generally, a document created "tomorrow" is suspicious.
         Output your findings in a structured JSON format with fields for:
         - authenticity_score (0-100)
         - flagged_issues (list of strings)
