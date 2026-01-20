@@ -51,7 +51,7 @@ export function UploadZone({ onUploadComplete }) {
 
         try {
             // Step 1: Upload File
-            const uploadResponse = await fetch('http://localhost:8000/api/upload', {
+            const uploadResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/upload`, {
                 method: 'POST',
                 body: formData,
             });
@@ -61,7 +61,7 @@ export function UploadZone({ onUploadComplete }) {
             const { task_id } = await uploadResponse.json();
 
             // Step 2: Open WebSocket for Real-time Analysis
-            const ws = new WebSocket(`ws://localhost:8000/ws/analyze/${task_id}`);
+            const ws = new WebSocket(`${import.meta.env.VITE_API_URL.replace('https', 'wss')}/ws/analyze/${task_id}`);
 
             ws.onopen = () => {
                 setStatusMessages(prev => [...prev, { step: 'CONNECT', message: 'Connected to VeriDoc Analysis Engine...' }]);

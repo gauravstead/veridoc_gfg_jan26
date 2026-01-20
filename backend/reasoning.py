@@ -8,8 +8,8 @@ load_dotenv()
 
 # Initialize Vertex AI (Do this once in your app startup)
 # You should set these environment variables or replace the strings below
-PROJECT_ID = os.getenv("PROJECT_ID", "your-project-id")
-REGION = os.getenv("REGION", "us-central1")
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", os.getenv("PROJECT_ID", "your-project-id"))
+REGION = os.getenv("REGION", "asia-south1")
 
 # Check if we can initialize immediately, otherwise wait for main to do it or env vars
 try:
@@ -58,7 +58,8 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf"):
         # We set temperature to 0.0 for maximum factual consistency
         
         # Initialize model with system instructions
-        model = GenerativeModel("gemini-2.5-flash", system_instruction=system_instruction)
+        model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+        model = GenerativeModel(model_name, system_instruction=system_instruction)
 
         response = model.generate_content(
             [document_part, prompt],
