@@ -19,13 +19,14 @@ The system operates on a **Conditional Logic Model**, utilizing a Python (FastAP
 ### 🕵️‍♂️ Pipeline A: Digital Structural Analysis
 *   **Target:** Native PDFs (digitally generated documents).
 *   **Methodology:** Deterministic Binary File Structure Parsing.
-*   **Libraries Used:** `pypdf`, `pdfminer.six`
+*   **Libraries Used:** `pypdf`
 
 ![Pipeline A Architecture](readme/pipe1.png)
 
 #### Key Techniques Implemented:
-1.  **Incremental Update Detection:** We scan raw file bytes for multiple `%%EOF` markers. A count > 1 indicates that the file has been "incrementally updated" (edited) after its initial creation, rather than being a pristine original.
-2.  **Metadata Forensics:** extraction of file metadata to identify suspicious producers (e.g., "Phantom", "GPL Ghostscript") often used in document manipulation tools vs. standard office software.
+1.  **Incremental Update & XRef Analysis:** We scan raw file bytes for multiple `%%EOF` markers and disjointed Cross-Reference (`xref`) tables. A count > 1 indicates that the file has been "incrementally updated" or spliced after initial creation.
+2.  **Hidden Payload Detection:** Scans the document structure for "Orphaned" objects, Embedded Files, and JavaScript. These are strong indicators of malicious payloads or hidden/deleted content (e.g., white-on-white text) often missed by visual checks.
+3.  **Metadata Forensics:** Extraction of file metadata to identify suspicious producers (e.g., "Phantom", "GPL Ghostscript") often used in document manipulation tools vs. standard office software.
 
 <br>
 
