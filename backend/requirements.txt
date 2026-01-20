@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+pypdf
+pdfminer.six
+opencv-python
+scikit-image
+numpy
+pyhanko
+cryptography
+pydantic
+google-cloud-aiplatform
+google-cloud-storage
+python-dotenv
