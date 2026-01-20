@@ -17,54 +17,76 @@ The rapid democratization of advanced digital editing tools has rendered traditi
 The system operates on a **Conditional Logic Model**, utilizing a Python (FastAPI) orchestrator to route files to specific analysis pipelines based on their format. This prevents redundant processing and maximizes detection accuracy.
 
 ### 🕵️‍♂️ Pipeline A: Digital Structural Analysis
-* **Target:** Native PDFs (selectable text, structured binary data).
-* **Methodology:** Deterministic Binary File Structure Parsing.
+*   **Target:** Native PDFs (digitally generated documents).
+*   **Methodology:** Deterministic Binary File Structure Parsing.
+*   **Libraries Used:** `pypdf`, `pdfminer.six`
 
 ![Pipeline A Architecture](readme/pipe1.png)
 
-#### Key Techniques:
-1.  **Incremental Update Detection (Chronology):** We scan raw file bytes for multiple `%%EOF` markers. A count > 1 indicates post-creation editing, revealing that new content was appended to the file tail rather than overwriting the original.
-2.  **XRef Table Forensics:** We parse the PDF Cross-Reference (XRef) table using low-level binary tools (e.g., pikepdf). The presence of a `Prev` entry in the trailer dictionary mathematically proves the file is a revision of a pre-existing document.
-3.  **Orphaned Object Scanning:** We traverse the Object Tree (Root → Pages Content) and cross-reference it with the full object list. A high volume of "orphaned" IDs suggests manipulation by external tools where content was unlinked from the Page Tree.
+#### Key Techniques Implemented:
+1.  **Incremental Update Detection:** We scan raw file bytes for multiple `%%EOF` markers. A count > 1 indicates that the file has been "incrementally updated" (edited) after its initial creation, rather than being a pristine original.
+2.  **Metadata Forensics:** extraction of file metadata to identify suspicious producers (e.g., "Phantom", "GPL Ghostscript") often used in document manipulation tools vs. standard office software.
 
 <br>
 
 ### 👁️ Pipeline B: Visual Statistical Analysis
-* **Target:** Scanned documents, JPEGs, Screenshots (Raster data).
-* **Methodology:** Statistical Signal Processing & Computer Vision.
+*   **Target:** Scanned documents, JPEGs, Screenshots (Raster data).
+*   **Methodology:** Statistical Signal Processing & Computer Vision.
+*   **Libraries Used:** `opencv-python`, `numpy`, `scikit-image`
 
 ![Pipeline B Architecture](readme/pipe2.png)
 
-#### Key Techniques:
-1.  **DCT Quantization Analysis:** JPEG compression relies on 8x8 pixel grids. A "Comb Effect" (gaps in the histogram) rather than a smooth bell curve indicates "Double Quantization," proving the image was re-saved after editing.
-2.  **ELA with Local Variance:** We re-compress the image at 95% quality and subtract it from the original. Unlike standard ELA, we calculate the Local Variance of the noise. Significant variance discrepancies (e.g., a logo vs. text box) confirm composite sourcing.
-3.  **Deep Splicing Detection (Physics-Aware):** Utilizes a **SegFormer-B0** architecture fine-tuned on the DocTamper dataset.
-    * **Stream 1:** Processes RGB visual content.
-    * **Stream 2:** Utilizes Phase Spectrum Analysis and learnable DCT tables to capture phase discontinuities.
-    * **Output:** A pixel-wise probability heatmap where high-confidence regions (p > 0.8) denote spliced pixels.
+#### Key Techniques Implemented:
+1.  **Error Level Analysis (ELA):** We perform ELA by re-saving the image at a known quality (90%) and computing the absolute difference from the original. High mean difference scores (>15) indicate potential manipulation or resaving artifacts.
+2.  **Histogram / Quantization Analysis:** A simplified check for "Double Quantization" by analyzing the pixel intensity histogram. We detect "gaps" (zero-bins) in the histogram, which often occur when a JPEG is decompressed and re-compressed.
+3.  **Semantic Segmentation (Planned):** Integration of a **SegFormer-B0** model (fine-tuned on DocTamper) is currently in development/pending to provide pixel-level splice detection.
+
+<br>
+
+### 🔐 Pipeline C: Cryptographic Verification
+*   **Target:** Digitally Signed PDFs (Contracts, Certificates).
+*   **Methodology:** Mathematical verification of Chain of Trust.
+*   **Libraries Used:** `pyhanko`, `cryptography`
+
+#### Key Techniques Implemented:
+1.  **Signature Integrity:** Validates that the document hash has not been altered since signing.
+2.  **Trust Verification:** Checks if the certificate root is trusted or if it is a self-signed (untrusted) certificate.
+3.  **Revocation Status:** Checks if the certificate has been actively revoked.
 
 <br>
 
 ### 🧠 Universal Layer: Unified Forensic Reasoning
-Executed only if Pipelines A and B find no technical anomalies, this layer serves as the final "Logical Gatekeeper". It uses **Vertex AI Agent Builder** to implement an **Agentic Verifier-Critique Loop**:
+Executed if pipelines find ambiguous results, this layer serves as the final "Logical Gatekeeper".
 
-* **Auditor Agent:** Extracts line items and flags potential arithmetic errors (e.g., Transactions ≠ Total) or logic mismatches.
-* **Verifier Agent:** Critiques the Auditor's findings (e.g., re-checking a blurry "8" that caused a math error) to filter hallucinations.
+*   **Technology:** **Google Vertex AI (Gemini 2.5 Flash)**.
+*   **Methodology:** Single-Shot Forensic Analysis.
+*   **Process:** The system sends the document (via secure GCS URI) to the Gemini 2.5 Flash model with a specialized system prompt acting as an "Expert Forensic Auditor". The model analyzes the content for logical inconsistencies (dates, totals, visual anomalies) and returns a structured JSON verdict.
+*   **Libraries Used:** `google-cloud-aiplatform`, `vertexai`.
 
-This iterative loop ensures flagged anomalies are genuine logical flaws rather than OCR misreads.
+---
+
+## 💻 Technical Specifications & Libraries
+
+VeriDoc leverages a robust Python ecosystem for deterministic analysis and API orchestration.
+
+| Component | Library / Tool | Purpose |
+| :--- | :--- | :--- |
+| **Orchestration** | `fastapi`, `uvicorn` | High-performance async API for handling concurrent analysis requests. |
+| **Structural** | `pypdf` | Parsing PDF internal structure and detecting incremental updates. |
+| **Visual** | `opencv-python`, `numpy` | High-speed matrix operations for ELA and histogram analysis. |
+| **Cryptographic** | `pyhanko`, `cryptography` | ASN.1 parsing and X.509 certificate validation. |
+| **AI Inference** | `google-cloud-aiplatform` | Interface for Vertex AI and Gemini models. |
+| **Storage** | `google-cloud-storage` | Secure file staging for AI analysis. |
 
 ---
 
 ## ☁️ GCP Infrastructure & Deployment strategy
 
-The architecture is built on a **Serverless First** principle using Google Cloud Platform to ensure high availability, strict privacy compliance, and specialized hardware access.
+The architecture is built on a **Serverless First** principle using Google Cloud Platform to ensure high availability and security.
 
-| Component | Service | Description |
-| :--- | :--- | :--- |
-| **Orchestration** | **Cloud Run Gen 2** | Containerized Python (FastAPI) orchestrator. Uses Gen 2 instances to access enhanced memory filesystems required for processing high-resolution ELA/DCT bitmaps in memory. |
-| **Inference** | **Vertex AI Prediction** | Hosts the SegFormer-B0 model on **NVIDIA T4 GPUs**. This ensures complex frequency-domain analysis occurs in <800ms, meeting fintech SLA requirements. |
-| **Reasoning** | **Vertex AI Agent Builder** | A managed service that handles the context window and tool retrieval for the Auditor/Verifier agents, replacing complex custom LangChain code. |
-| **Secure Ingestion** | **Cloud Storage** | Documents are ingested via buckets with strict Object Lifecycle Management policies. Files are automatically purged immediately after the JSON verdict to ensure no PII retention (GDPR/CCPA compliant). |
+### 1.  **Local Ingestion:** Fast, local checks (Pipelines A/B/C) run on the application server (Cloud Run) to filter obvious fakes without incurring AI costs.
+2.  **Secure Staging:** Files are uploaded to **Google Cloud Storage (GCS)** buckets with strict lifecycle policies.
+3.  **AI Analysis:** Vertex AI accesses the file directly from GCS (`gs://...` URI), ensuring data never leaves the secure cloud perimeter during analysis.
 
 ---
 
@@ -72,6 +94,6 @@ The architecture is built on a **Serverless First** principle using Google Cloud
 
 ![Impact Metrics](readme/impact.png)
 
-* **Defensible Verification:** Moves analysis from subjective suspicion to mathematical proof (e.g., XRef evidence), creating legally defensible audit trails.
-* **Explainable AI (XAI):** Provides granular "Reasoning Traces" (e.g., "Flagged due to Double Quantization") rather than black-box scores.
-* **Operational Velocity:** Replaces 20+ minute manual reviews with an automated pipeline delivering verdicts in <3 seconds.
+*   **Defensible Verification:** Moves analysis from subjective suspicion to mathematical proof (e.g., EOF markers, Signature validation).
+*   **Explainable AI (XAI):** Provides detailed reasoning via Gemini's analysis, rather than just "black box" confidence scores.
+*   **Operational Velocity:** Automates the initial forensic pass, reducing manual review time significantly.
