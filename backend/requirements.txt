@@ -12,3 +12,7 @@ pydantic
 google-cloud-aiplatform
 google-cloud-storage
 python-dotenv
+
+torch
+transformers
+pillow

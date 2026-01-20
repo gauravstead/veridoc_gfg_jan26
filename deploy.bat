@@ -7,6 +7,7 @@ start /B gcloud run deploy veridoc-backend ^
   --source ./backend ^
   --region asia-south1 ^
   --allow-unauthenticated ^
+  --memory 1Gi ^
   --env-vars-file ./backend/.env
 
 REM Deploy Frontend

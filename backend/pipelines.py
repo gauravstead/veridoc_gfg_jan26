@@ -1,3 +1,4 @@
+from visual_model.inference import run_tamper_detection
 import os
 from enum import Enum
 from pypdf import PdfReader
@@ -288,11 +289,17 @@ def analyze_visual(file_path: str):
             
 
              
-    # 3. Semantic Segmentation (Placeholder)
-    # TODO: Implement nvidia/segformer-b0-finetuned-ade-512-512
-    # This section will load the model and check for inconsistent segmentation maps
-    # which might indicate splicing or copy-move attacks.
-    results['details']['semantic_segmentation'] = "Pending Implementation (SegFormer)"
+    # 3. Semantic Segmentation (SegFormer-B0)
+    try:
+        seg_res = run_tamper_detection(file_path)
+        results["details"]["semantic_segmentation"] = seg_res
+        
+        if seg_res.get("is_tampered"):
+             conf = seg_res.get("confidence_score", 0)
+             results["flags"].append(f"Deep Learning Detection (SegFormer): Tampering Detected (Conf: {conf:.2f})")
+             results["score"] += 0.6 
+    except Exception as e:
+        results["details"]["semantic_segmentation"] = f"Model Failed: {str(e)}"
 
     # Cap score
     results['score'] = min(results['score'], 1.0)

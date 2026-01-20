@@ -7,6 +7,9 @@ WORKDIR /app
 # Install system dependencies required for OpenCV and others
 RUN apt-get update && apt-get install -y libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
 
+# Install CPU-only PyTorch first (to keep image small)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Copy the requirements file into the container at /app
 COPY requirements.txt .
 
