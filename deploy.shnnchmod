@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# Deploy Backend and Frontend to GCP Cloud Run in parallel
+
+echo "Starting parallel deployment to asia-south1..."
+
+# Deploy Backend
+gcloud run deploy veridoc-backend \n  --source ./backend \n  --region asia-south1 \n  --allow-unauthenticated \n  --env-vars-file ./backend/.env &
+
+# Deploy Frontend
+gcloud run deploy veridoc-frontend \n  --source ./frontend \n  --region asia-south1 \n  --allow-unauthenticated &
+
+# Wait for both background processes to complete
+wait
+
+echo "Deployment complete!"
