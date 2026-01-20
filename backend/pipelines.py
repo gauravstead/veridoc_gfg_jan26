@@ -106,9 +106,16 @@ def analyze_quantization(image_path: str) -> dict:
 
 # --- PIPELINES ---
 
+# --- HELPERS: STRUCTURAL PIPELINE ---
+# (Helper removed to ensure stability during hot-fix)
+
 def analyze_structural(file_path: str):
     """
     Pipeline A: Structural Forensics (Native PDFs)
+    Advanced checks including:
+    1. Incremental Update Detection (EOF markers)
+    2. XRef Table keyword analysis
+    3. Metadata Consistency
     """
     results = {
         "pipeline": "Structural Forensics (Real)",
@@ -118,24 +125,29 @@ def analyze_structural(file_path: str):
     }
     
     try:
-        # 1. Incremental Update Detection
+        # 1. Incremental Update Detection (Raw Bytes)
         with open(file_path, 'rb') as f:
             content = f.read()
             eof_count = content.count(b'%%EOF')
+            # xref keyword often appears once per section in standard PDFs.
+            # Multiple xrefs can also imply updates.
+            xref_count = content.count(b'xref') 
             
         results['details']['eof_markers_found'] = eof_count
+        results['details']['xref_keywords_found'] = xref_count
         
         if eof_count > 1:
-            results['flags'].append(f"Detected {eof_count} Incremental Updates (File has been edited)")
+            results['flags'].append(f"Detected {eof_count} Incremental Updates (File modified after creation)")
             results['score'] += 0.15 * (eof_count - 1)
         elif eof_count == 0:
             results['flags'].append("Malformed PDF: No %%EOF marker found")
-            results['score'] = 1.0
+            results['score'] = 1.0 # High risk or broken
             
-        # 2. Metadata Extraction
+        # 2. PDF Parsing & Deep Analysis
         reader = PdfReader(file_path)
-        meta = reader.metadata
         
+        # A. Metadata Forensics
+        meta = reader.metadata
         if meta:
             safe_meta = {k: str(v) for k, v in meta.items()}
             results['details']['metadata'] = safe_meta
@@ -149,7 +161,31 @@ def analyze_structural(file_path: str):
                  results['score'] += 0.3
         else:
             results['flags'].append("No Metadata found")
-            
+            results['score'] += 0.1
+
+        # B. Orphan / Hidden Content Analysis (Simplified Safe Mode)
+        # Instead of deep traversal which risks recursion errors, we check for high-risk flags
+        try:
+            # Check for embedded files (often used for attacks)
+            if reader.trailer and '/Root' in reader.trailer:
+                root_obj = reader.trailer['/Root']
+                # Depending on pypdf version, root_obj might be IndirectObject or Dict
+                # We access it safely
+                if hasattr(root_obj, 'get_object'):
+                    root_obj = root_obj.get_object()
+                
+                if '/EmbeddedFiles' in root_obj:
+                     results['flags'].append("Contains Embedded Files (Potential Payload)")
+                     results['score'] += 0.3
+                     
+                if '/JS' in root_obj or '/JavaScript' in root_obj:
+                     results['flags'].append("Contains Embeded JavaScript (High Risk)")
+                     results['score'] += 0.5
+                 
+        except Exception as e:
+            # Don't fail the whole pipeline for an advanced check
+            results['warnings'] = f"Advanced structural check warning: {str(e)}"
+
         results['score'] = min(results['score'], 1.0)
             
     except Exception as e:
