@@ -4,10 +4,8 @@ from enum import Enum
 from pypdf import PdfReader
 import cv2
 import numpy as np
-from scipy.fftpack import dct
 from pyhanko.sign import validation
 from pyhanko.pdf_utils.reader import PdfFileReader
-import logging
 
 class PipelineType(Enum):
     STRUCTURAL = "structural"
@@ -154,9 +152,10 @@ def analyze_quantization(image_path: str) -> dict:
 # --- PIPELINES ---
 
 # --- HELPERS: STRUCTURAL PIPELINE ---
-# (Helper removed to ensure stability during hot-fix)
 
-def analyze_structural(file_path: str):
+import asyncio
+
+async def analyze_structural(file_path: str, callback=None):
     """
     Pipeline A: Structural Forensics (Native PDFs)
     Advanced checks including:
@@ -191,47 +190,116 @@ def analyze_structural(file_path: str):
             results['score'] = 1.0 # High risk or broken
             
         # 2. PDF Parsing & Deep Analysis
-        reader = PdfReader(file_path)
-        
-        # A. Metadata Forensics
-        meta = reader.metadata
-        if meta:
-            safe_meta = {k: str(v) for k, v in meta.items()}
-            results['details']['metadata'] = safe_meta
+        # We use a context manager to ensure the file handle is closed immediately after use, allowing cleanup.
+        with open(file_path, 'rb') as f_stream:
+            reader = PdfReader(f_stream)
             
-            producer = safe_meta.get('/Producer', '').lower()
-            if not producer:
-                results['flags'].append("Missing Producer Metadata")
-                results['score'] += 0.2
-            elif "phantom" in producer or "gpl output" in producer:
-                 results['flags'].append(f"Suspicious Producer detected: {safe_meta.get('/Producer')}")
-                 results['score'] += 0.3
-        else:
-            results['flags'].append("No Metadata found")
-            results['score'] += 0.1
-
-        # B. Orphan / Hidden Content Analysis (Simplified Safe Mode)
-        # Instead of deep traversal which risks recursion errors, we check for high-risk flags
-        try:
-            # Check for embedded files (often used for attacks)
-            if reader.trailer and '/Root' in reader.trailer:
-                root_obj = reader.trailer['/Root']
-                # Depending on pypdf version, root_obj might be IndirectObject or Dict
-                # We access it safely
-                if hasattr(root_obj, 'get_object'):
-                    root_obj = root_obj.get_object()
+            # A. Metadata Forensics
+            meta = reader.metadata
+            if meta:
+                safe_meta = {k: str(v) for k, v in meta.items()}
+                results['details']['metadata'] = safe_meta
                 
-                if '/EmbeddedFiles' in root_obj:
-                     results['flags'].append("Contains Embedded Files (Potential Payload)")
-                     results['score'] += 0.3
-                     
-                if '/JS' in root_obj or '/JavaScript' in root_obj:
-                     results['flags'].append("Contains Embeded JavaScript (High Risk)")
-                     results['score'] += 0.5
-                 
-        except Exception as e:
-            # Don't fail the whole pipeline for an advanced check
-            results['warnings'] = f"Advanced structural check warning: {str(e)}"
+                producer = safe_meta.get('/Producer', '').lower()
+                if not producer:
+                    results['flags'].append("Missing Producer Metadata")
+                    results['score'] += 0.2
+                elif "phantom" in producer or "gpl output" in producer:
+                    results['flags'].append(f"Suspicious Producer detected: {safe_meta.get('/Producer')}")
+                    results['score'] += 0.3
+            else:
+                results['flags'].append("No Metadata found")
+                results['score'] += 0.1
+                
+            # --- NEW: Deep Image Inspection (Extract & Analyze) ---
+            # Checks for embedded images that might be faked (e.g., pasted signature, fake bank statement screenshot)
+            try:
+                embedded_images = []
+                for page in reader.pages:
+                    for img in page.images:
+                        embedded_images.append(img)
+                
+                results['details']['embedded_image_count'] = len(embedded_images)
+                results['details']['analyzed_images'] = []
+                
+                if len(embedded_images) > 0:
+                    # Analyze up to 3 largest images to save time, or all if critical.
+                    # For now, analyze the first 3.
+                    for idx, img_obj in enumerate(embedded_images[:3]):
+                        # Send Update
+                        if callback:
+                            await callback(f"Found embedded image {idx+1}/{len(embedded_images[:3])}. Running Visual Forensics (SegFormer)...")
+
+                        # Save temp
+                        temp_img_name = f"{os.path.basename(file_path)}_img_{idx}.{img_obj.name.split('.')[-1]}"
+                        temp_img_path = os.path.join(os.path.dirname(file_path), temp_img_name)
+                        
+                        with open(temp_img_path, "wb") as fp:
+                            fp.write(img_obj.data)
+                            
+                        # RUN VISUAL PIPELINE ON EXTRACTED CONTENT
+                        # CRITICAL FIX: Offload heavy lifting to thread to avoid blocking Event Loop
+                        # Use run_in_executor for broader Python compatibility (pre-3.9)
+                        loop = asyncio.get_running_loop()
+                        visual_report = await loop.run_in_executor(None, analyze_visual, temp_img_path)
+                        
+                        # Store comprehensive results for this image
+                        # We inject the temp filename so the frontend knows what to fetch
+                        # Also include image metadata if available
+                        image_summary = {
+                            "index": idx,
+                            "filename": temp_img_name,
+                            "visual_report": visual_report
+                        }
+                        results['details']['analyzed_images'].append(image_summary)
+
+                        # Check for flags (Original Logic Preserved)
+                        if visual_report.get('score', 0) > 0.4:
+                            results['flags'].append(f"Embedded Image {idx+1}: Potential Tampering Detected")
+                            results['score'] += 0.4
+                            
+                            if 'semantic_segmentation' in visual_report['details']:
+                                sem = visual_report['details']['semantic_segmentation']
+                                if isinstance(sem, dict) and sem.get('is_tampered'):
+                                    conf = sem.get('confidence_score', 0)
+                                    results['flags'].append(f"-> SegFormer found tampering in embedded image {idx+1} (Conf: {conf:.2f})")
+                                    results['score'] += 0.3
+                        
+                        # --- PERSISTENCE LOGIC ---
+                        # We KEEP the temp files if we analyzed them, so the frontend can show the Visual Lab for ANY processed image.
+                        # This meets the user requirement: "make the visual lab thing for each image... show those graphs too"
+                        # We do NOT delete the files here. They will be cleaned up by the explicit cleanup API.
+
+
+            except Exception as e:
+                results['warnings'] = f"Deep Image Inspection failed: {str(e)}"
+
+
+            # B. Orphan / Hidden Content Analysis (Simplified Safe Mode)
+            # Instead of deep traversal which risks recursion errors, we check for high-risk flags
+            try:
+                # Check for embedded files (often used for attacks)
+                if reader.trailer and '/Root' in reader.trailer:
+                    root_obj = reader.trailer['/Root']
+                    # Depending on pypdf version, root_obj might be IndirectObject or Dict
+                    # We access it safely
+                    if hasattr(root_obj, 'get_object'):
+                        root_obj = root_obj.get_object()
+                    
+                    if '/EmbeddedFiles' in root_obj:
+                        results['flags'].append("Contains Embedded Files (Potential Payload)")
+                        results['score'] += 0.3
+                        
+                    if '/JS' in root_obj or '/JavaScript' in root_obj:
+                        results['flags'].append("Contains Embeded JavaScript (High Risk)")
+                        results['score'] += 0.5
+                    
+            except Exception as e:
+                # Don't fail the whole pipeline for an advanced check
+                results['warnings'] = f"Advanced structural check warning: {str(e)}"
+
+        # Context manager closes f_stream here
+
 
         results['score'] = min(results['score'], 1.0)
             

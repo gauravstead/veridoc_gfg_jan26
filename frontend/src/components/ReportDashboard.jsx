@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
     ShieldCheck, ShieldAlert, FileSearch, Activity, Lock,
     ChevronRight, AlertCircle, GitBranch, Terminal, Layers,
-    Check, X, BarChart3, Fingerprint, FileType, Search, Eye
+    Check, X, BarChart3, Fingerprint, FileType, Search, Eye,
+    ZoomIn, ZoomOut, Maximize
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -22,6 +23,13 @@ export function ReportDashboard({ data, onReset }) {
 
     const [showFullReasoning, setShowFullReasoning] = useState(false);
     const [activeLayer, setActiveLayer] = useState('heatmap'); // 'original', 'heatmap', 'ela', 'noise', 'ai_analysis'
+    const [zoomLevel, setZoomLevel] = useState(1);
+    const [selectedImageIndex, setSelectedImageIndex] = useState(0); // For multiple embedded images
+    const containerRef = useRef(null);
+
+    const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 0.5, 4));
+    const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 0.5, 1));
+    const handleResetZoom = () => setZoomLevel(1);
 
     // Determine what text to show primarily
     let primaryText = "No details provided.";
@@ -312,123 +320,179 @@ export function ReportDashboard({ data, onReset }) {
                         </div>
                     )}
 
-                    {/* NEW: Visual Evidence Layer (Heatmap/ELA) - ONLY FOR VISUAL PIPELINE */}
-                    {pipeline_used === 'visual' && (
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-900 text-white">
-                                <div className="flex items-center gap-2">
-                                    <Eye className="w-5 h-5 text-brand-400" />
-                                    <h3 className="font-semibold">Visual Forensics Lab</h3>
-                                </div>
-                                {/* Layer Switcher */}
-                                <div className="flex bg-slate-800 rounded-lg p-1 gap-1 flex-wrap">
-                                    {['original', 'heatmap', 'ela', 'noise', 'ai_analysis'].map(layer => {
-                                        let label = 'Original';
-                                        if (layer === 'heatmap') label = 'SegFormer Forgery Map'; // Renamed
-                                        if (layer === 'ela') label = 'ELA Mode';
-                                        if (layer === 'noise') label = 'Noise Map';
-                                        if (layer === 'ai_analysis') label = modelName.replace(/-/g, ' '); // Dynamic Label
+                    {/* NEW: Visual Evidence Layer (Heatmap/ELA) - ONLY FOR VISUAL PIPELINE OR SUSPICIOUS EMBEDDED IMAGES */}
+                    {(pipeline_used === 'visual' || (report.details?.analyzed_images && report.details.analyzed_images.length > 0)) && (() => {
+                        // Determine which report data to use
+                        // If Visual Pipeline, use root report.details
+                        // If Structural with embedded images, use the selected image's visual_report
+                        let currentDetails = report.details;
+                        let currentFilename = data.filename;
 
-                                        return (
-                                            <button
-                                                key={layer}
-                                                onClick={() => setActiveLayer(layer)}
-                                                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${activeLayer === layer ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
-                                            >
-                                                {label}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
+                        const embeddedImages = report.details?.analyzed_images || [];
+                        const hasEmbedded = embeddedImages.length > 0;
 
-                            <div className="p-6 bg-slate-50 flex flex-col items-center">
-                                <div className="w-full mb-4">
-                                    {activeLayer === 'heatmap' && (
-                                        <p className="text-slate-600 text-sm">
-                                            <span className="inline-block w-3 h-3 bg-red-500 rounded-full mx-1"></span> <span className="font-semibold text-slate-800">SegFormer Analysis</span>: Red areas indicate high probability of digital tampering (Splice/Copy-Move).
-                                        </p>
-                                    )}
-                                    {activeLayer === 'ela' && (
-                                        <p className="text-slate-600 text-sm">
-                                            Highlights compression artifacts. White noise should be uniform. Bright clusters indicate resaved regions.
-                                        </p>
-                                    )}
-                                    {activeLayer === 'noise' && (
-                                        <p className="text-slate-600 text-sm">
-                                            <span className="font-semibold text-orange-600">High Frequency Noise Map</span>: Analyzes local variance. Inconsistencies in grain/noise often reveal spliced content.
-                                        </p>
-                                    )}
-                                    {activeLayer === 'ai_analysis' && (
-                                        <p className="text-slate-600 text-sm">
-                                            <span className="font-semibold text-indigo-600 capitalize">{modelName.replace(/-/g, ' ')} Vision</span>: AI-detected anomalies. Red boxes indicate specific regions flagged by the model.
-                                        </p>
-                                    )}
-                                </div>
+                        if (hasEmbedded) {
+                            const selected = embeddedImages[selectedImageIndex] || embeddedImages[0];
+                            currentDetails = selected.visual_report.details;
+                            currentFilename = selected.filename;
+                        }
 
-                                <div className="relative rounded-lg overflow-hidden border border-slate-300 shadow-xl max-w-full inline-block">
-                                    {/* Base Image */}
-                                    <img
-                                        src={`http://localhost:8000/static/uploads/${data.filename}`}
-                                        alt="Document"
-                                        className="block w-auto h-auto object-contain"
-                                        style={{ maxHeight: '600px', maxWidth: '100%' }}
-                                    />
+                        return (
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                                <div className="px-6 py-4 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between bg-slate-900 text-white gap-4">
+                                    <div className="flex items-center gap-4">
+                                        <div className="flex items-center gap-2">
+                                            <Eye className="w-5 h-5 text-brand-400" />
+                                            <h3 className="font-semibold">Visual Forensics Lab</h3>
+                                        </div>
 
-                                    {/* Layers */}
-                                    {activeLayer === 'heatmap' && report.details?.semantic_segmentation?.heatmap_image && (
-                                        <img
-                                            src={report.details.semantic_segmentation.heatmap_image}
-                                            alt="Forgery Heatmap"
-                                            className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-                                            style={{ zIndex: 10 }}
-                                        />
-                                    )}
-
-                                    {activeLayer === 'ela' && report.details?.ela?.ela_image_path && (
-                                        <img
-                                            src={`http://localhost:8000/static/uploads/${report.details.ela.ela_image_path}`}
-                                            alt="ELA Analysis"
-                                            className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90"
-                                            style={{ zIndex: 10 }}
-                                        />
-                                    )}
-
-                                    {activeLayer === 'noise' && report.details?.noise_analysis?.noise_map_path && (
-                                        <img
-                                            src={`http://localhost:8000/static/uploads/${report.details.noise_analysis.noise_map_path}`}
-                                            alt="Noise Analysis"
-                                            className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90"
-                                            style={{ zIndex: 10 }}
-                                        />
-                                    )}
-
-                                    {/* Bounding Boxes (AI) - ONLY Show in AI Analysis Layer */}
-                                    {activeLayer === 'ai_analysis' && boundingBoxes.map((box, idx) => {
-                                        // box.box_2d is [ymin, xmin, ymax, xmax] normalized 0-1000
-                                        const [ymin, xmin, ymax, xmax] = box.box_2d;
-                                        return (
-                                            <div
-                                                key={idx}
-                                                className="absolute border-2 border-red-500 bg-red-500/10 z-20 group"
-                                                style={{
-                                                    top: `${ymin / 10}%`,
-                                                    left: `${xmin / 10}%`,
-                                                    height: `${(ymax - ymin) / 10}%`,
-                                                    width: `${(xmax - xmin) / 10}%`
-                                                }}
-                                            >
-                                                {/* Tooltip on hover */}
-                                                <div className="hidden group-hover:block absolute -top-8 left-0 bg-slate-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30">
-                                                    {box.label || "Anomaly"}
-                                                </div>
+                                        {/* Image Selector for PDFs with multiple images */}
+                                        {hasEmbedded && embeddedImages.length > 1 && (
+                                            <div className="flex bg-slate-800 rounded-lg p-1 gap-1">
+                                                {embeddedImages.map((img, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        onClick={() => setSelectedImageIndex(idx)}
+                                                        className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${selectedImageIndex === idx ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                                                    >
+                                                        Image {idx + 1}
+                                                    </button>
+                                                ))}
                                             </div>
-                                        );
-                                    })}
+                                        )}
+                                    </div>
+
+                                    {/* Layer Switcher */}
+                                    <div className="flex bg-slate-800 rounded-lg p-1 gap-1 flex-wrap">
+                                        {['original', 'heatmap', 'ela', 'noise', 'ai_analysis'].map(layer => {
+                                            let label = 'Original';
+                                            if (layer === 'heatmap') label = 'SegFormer'; // Renamed
+                                            if (layer === 'ela') label = 'ELA';
+                                            if (layer === 'noise') label = 'Noise';
+                                            if (layer === 'ai_analysis') label = 'AI Vision'; // Dynamic Label
+
+                                            return (
+                                                <button
+                                                    key={layer}
+                                                    onClick={() => setActiveLayer(layer)}
+                                                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${activeLayer === layer ? 'bg-indigo-500 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                                                >
+                                                    {label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                <div className="p-6 bg-slate-50 flex flex-col items-center">
+                                    <div className="w-full mb-4">
+                                        {activeLayer === 'heatmap' && (
+                                            <p className="text-slate-600 text-sm">
+                                                <span className="inline-block w-3 h-3 bg-red-500 rounded-full mx-1"></span> <span className="font-semibold text-slate-800">SegFormer Analysis</span>: Red areas indicate high probability of digital tampering (Splice/Copy-Move).
+                                            </p>
+                                        )}
+                                        {activeLayer === 'ela' && (
+                                            <p className="text-slate-600 text-sm">
+                                                Highlights compression artifacts. White noise should be uniform. Bright clusters indicate resaved regions.
+                                            </p>
+                                        )}
+                                        {activeLayer === 'noise' && (
+                                            <p className="text-slate-600 text-sm">
+                                                <span className="font-semibold text-orange-600">High Frequency Noise Map</span>: Analyzes local variance. Inconsistencies in grain/noise often reveal spliced content.
+                                            </p>
+                                        )}
+                                        {activeLayer === 'ai_analysis' && (
+                                            <p className="text-slate-600 text-sm">
+                                                <span className="font-semibold text-indigo-600 capitalize">{modelName.replace(/-/g, ' ')} Vision</span>: AI-detected anomalies. Red boxes indicate specific regions flagged by the model.
+                                            </p>
+                                        )}
+                                    </div>
+
+
+                                </div>
+
+                                {/* Zoom Controls */}
+                                <div className="flex gap-2 mb-2 w-full justify-end px-4">
+                                    <button onClick={handleZoomOut} className="p-1.5 bg-white border border-slate-200 rounded hover:bg-slate-50 text-slate-600" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
+                                    <span className="text-xs font-mono py-2 text-slate-500">{Math.round(zoomLevel * 100)}%</span>
+                                    <button onClick={handleZoomIn} className="p-1.5 bg-white border border-slate-200 rounded hover:bg-slate-50 text-slate-600" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
+                                    <button onClick={handleResetZoom} className="p-1.5 bg-white border border-slate-200 rounded hover:bg-slate-50 text-slate-600" title="Reset"><Maximize className="w-4 h-4" /></button>
+                                </div>
+
+                                <div
+                                    className="relative rounded-lg overflow-hidden border border-slate-300 shadow-xl max-w-full inline-block bg-slate-100 cursor-move"
+                                    ref={containerRef}
+                                    style={{ height: '600px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                                >
+                                    <motion.div
+                                        drag={zoomLevel > 1}
+                                        dragConstraints={containerRef}
+                                        className="relative"
+                                        animate={{ scale: zoomLevel }}
+                                        transition={{ type: 'spring', damping: 20 }}
+                                    >
+                                        {/* Base Image */}
+                                        <img
+                                            src={`http://localhost:8000/static/uploads/${currentFilename}`}
+                                            alt="Document"
+                                            className="block max-h-[580px] w-auto object-contain pointer-events-none"
+                                        />
+
+                                        {/* Layers */}
+                                        {activeLayer === 'heatmap' && currentDetails?.semantic_segmentation?.heatmap_image && (
+                                            <img
+                                                src={currentDetails.semantic_segmentation.heatmap_image}
+                                                alt="Forgery Heatmap"
+                                                className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                                                style={{ zIndex: 10 }}
+                                            />
+                                        )}
+
+                                        {activeLayer === 'ela' && currentDetails?.ela?.ela_image_path && (
+                                            <img
+                                                src={`http://localhost:8000/static/uploads/${currentDetails.ela.ela_image_path}`}
+                                                alt="ELA Analysis"
+                                                className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90"
+                                                style={{ zIndex: 10 }}
+                                            />
+                                        )}
+
+                                        {activeLayer === 'noise' && currentDetails?.noise_analysis?.noise_map_path && (
+                                            <img
+                                                src={`http://localhost:8000/static/uploads/${currentDetails.noise_analysis.noise_map_path}`}
+                                                alt="Noise Analysis"
+                                                className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90"
+                                                style={{ zIndex: 10 }}
+                                            />
+                                        )}
+
+                                        {/* Bounding Boxes (AI) - ONLY Show in AI Analysis Layer */}
+                                        {activeLayer === 'ai_analysis' && boundingBoxes.map((box, idx) => {
+                                            // box.box_2d is [ymin, xmin, ymax, xmax] normalized 0-1000
+                                            const [ymin, xmin, ymax, xmax] = box.box_2d;
+                                            return (
+                                                <div
+                                                    key={idx}
+                                                    className="absolute border-2 border-red-500 bg-red-500/10 z-20 group"
+                                                    style={{
+                                                        top: `${ymin / 10}%`,
+                                                        left: `${xmin / 10}%`,
+                                                        height: `${(ymax - ymin) / 10}%`,
+                                                        width: `${(xmax - xmin) / 10}%`
+                                                    }}
+                                                >
+                                                    {/* Tooltip on hover */}
+                                                    <div className="hidden group-hover:block absolute -top-8 left-0 bg-slate-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30">
+                                                        {box.label || "Anomaly"}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </motion.div>
                                 </div>
                             </div>
-                        </div>
-                    )}
+                        );
+                    })()}
 
                     {/* Visual Data Section (Replaces Raw JSON) */}
                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
@@ -437,13 +501,28 @@ export function ReportDashboard({ data, onReset }) {
                             <h3 className="font-semibold text-slate-800">ForensicMetrics Breakdown</h3>
                         </div>
                         <div className="p-6">
-                            {pipeline_used === 'visual' ? renderVisualMetrics(report.details) : renderStructuralMetrics(report.details)}
+                            {(() => {
+                                // Logic to determine which details to pass to metrics
+                                let currentDetails = report.details;
+                                if (report.details?.analyzed_images?.length > 0) {
+                                    currentDetails = report.details.analyzed_images[selectedImageIndex].visual_report.details;
+                                }
+
+                                return pipeline_used === 'visual' || (report.details?.analyzed_images && report.details.analyzed_images.length > 0)
+                                    ? renderVisualMetrics(currentDetails)
+                                    : renderStructuralMetrics(report.details);
+                            })()}
                         </div>
                     </div>
 
                     <div className="pt-2 flex justify-end">
                         <button
-                            onClick={onReset}
+                            onClick={async () => {
+                                if (data?.task_id) {
+                                    console.log(`Resetting view for task ${data.task_id}`);
+                                }
+                                onReset();
+                            }}
                             className="px-8 py-3 bg-slate-900 text-white rounded-xl shadow-lg hover:bg-slate-800 hover:shadow-xl hover:-translate-y-0.5 transition-all font-semibold flex items-center gap-2"
                         >
                             <FileSearch className="w-4 h-4" />

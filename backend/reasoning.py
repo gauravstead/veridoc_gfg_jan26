@@ -1,7 +1,7 @@
 import vertexai
 from datetime import datetime
 
-from vertexai.generative_models import GenerativeModel, Part, SafetySetting
+from vertexai.generative_models import GenerativeModel, Part
 import json
 import os
 from dotenv import load_dotenv
@@ -40,14 +40,32 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf", local_report=No
         )
         
         # Prepare Context String from Local Report
-        # Prepare Context String from Local Report
         local_context = "No prior local analysis available."
         if local_report:
+            # SANITIZATION: Remove heavy Base64 strings to prevent Token Limit Error
+            def sanitize_data(data):
+                if isinstance(data, dict):
+                    return {k: sanitize_data(v) for k, v in data.items() if k not in ['heatmap_image', 'ela_image', 'noise_map']}
+                elif isinstance(data, list):
+                    # Truncate long lists (e.g., histogram values)
+                    if len(data) > 50 and all(isinstance(x, (int, float)) for x in data):
+                        return data[:10] + [f"... {len(data)-10} more items ..."]
+                    return [sanitize_data(item) for item in data]
+                elif isinstance(data, str):
+                    # Safety check: if a string looks like a base64 image (starts with data:image), drop it
+                    if len(data) > 1000 and "data:image" in data[:50]:
+                        return "<Base64 Image Data Omitted>"
+                    if len(data) > 5000: # General truncation for massive logs
+                        return data[:1000] + "... (truncated)"
+                return data
+
             # We want to provide the FULL details to the AI so it can explain everything
             # serialized in a readable format.
-            details = local_report.get('details', {})
-            flags = local_report.get('flags', [])
-            score = local_report.get('score', 0)
+            clean_report = sanitize_data(local_report) # Create deep-ish copy via recursion
+            
+            details = clean_report.get('details', {})
+            flags = clean_report.get('flags', [])
+            score = clean_report.get('score', 0)
             
             # Create a clean summary object
             context_data = {
@@ -99,9 +117,6 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf", local_report=No
         If you find specific visual anomalies, provide bounding boxes.
         Format: [ymin, xmin, ymax, xmax] normalized to 0-1000.
         """
-        # Note: The user mentioned "Paste the full SYSTEM_PROMPT string here" but didn't provide it in the snippet 
-        # beyond the truncated version. I'm adding a reasonable placeholder.
-
         # 4. Generate Content
         # We set temperature to 0.0 for maximum factual consistency
         

@@ -1,10 +1,9 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 import shutil
 import uuid
-import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -13,53 +12,50 @@ from reasoning import run_semantic_reasoning
 from pypdf import PdfReader
 from google.cloud import storage
 from dotenv import load_dotenv
+from pathlib import Path
 
 load_dotenv()
 
 UPLOAD_DIR = "uploads"
 
-async def cleanup_cron():
-    """Background task to delete files older than 15 minutes."""
-    while True:
-        try:
-            await asyncio.sleep(60)  # Check every minute
-            now = time.time()
-            cutoff = now - 900  # 15 minutes
-            
-            if os.path.exists(UPLOAD_DIR):
-                for filename in os.listdir(UPLOAD_DIR):
-                    file_path = os.path.join(UPLOAD_DIR, filename)
-                    if os.path.isfile(file_path):
-                        try:
-                            file_mtime = os.path.getmtime(file_path)
-                            if file_mtime < cutoff:
-                                os.remove(file_path)
-                                print(f"Deleted old file: {filename}")
-                        except Exception as e:
-                            print(f"Error checking/deleting {filename}: {e}")
-        except Exception as e:
-             print(f"Error in cleanup loop: {e}")
-             await asyncio.sleep(60)
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Run cleanup task
-    task = asyncio.create_task(cleanup_cron())
+    # Startup: No background tasks needed for now
     yield
-    # Shutdown: Cancel task
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    # Shutdown
+
 
 app = FastAPI(title="VeriDoc API", description="Document Forgery Detection System", lifespan=lifespan)
 
 
 # GCS Configuration
-
-# GCS Configuration
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "veridoc-uploads")
+
+def cleanup_stale_files(directory: Path, max_age_seconds: int = 300):
+    """
+    Background task to remove files older than max_age_seconds.
+    Running in background prevents blocking the upload response.
+    """
+    try:
+        current_time = time.time()
+        if not directory.exists():
+            return
+            
+        for item in directory.iterdir():
+            try:
+                # Delete files/dirs older than threshold
+                if item.stat().st_mtime < current_time - max_age_seconds:
+                    if item.is_file() or item.is_symlink():
+                        item.unlink()
+                        print(f"Background Cleaned: {item.name}")
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                        print(f"Background Cleaned Dir: {item.name}")
+            except Exception as e:
+                # Non-blocking tolerance - logging only
+                print(f"Background cleanup warning for {item.name}: {e}")
+    except Exception as e:
+        print(f"Background cleanup process error: {e}")
 
 def upload_to_gcs(source_file_name, destination_blob_name):
     """Uploads a file to the bucket."""
@@ -110,15 +106,32 @@ def health_check():
     return {"status": "healthy"}
 
 @app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...)
+):
     """
     Uploads a document and returns a task ID for WebSocket analysis.
     """
     try:
-        # 1. Save File
+        # 1. Schedule Cleanup (Non-blocking)
+        # Using pathlib for modern Python 3.12+ style handling
+        upload_path = Path(UPLOAD_DIR)
+        
+        # We trigger cleanup of OLD files (stale from previous sessions)
+        # We assume 5 minutes (300s) is enough for a session. 
+        # For immediate responsiveness, we don't wipe everything synchronously.
+        background_tasks.add_task(cleanup_stale_files, upload_path, 300)
+        
+        # 2. Save New File
+        print(f"Receiving file: {file.filename}")
         file_ext = file.filename.split('.')[-1].lower()
         task_id = str(uuid.uuid4())
         safe_filename = f"{task_id}.{file_ext}"
+        
+        # Ensure directory exists
+        upload_path.mkdir(parents=True, exist_ok=True)
+        
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         
         with open(file_path, "wb") as buffer:
@@ -182,9 +195,13 @@ async def analyze_document(websocket: WebSocket, task_id: str):
 
         # Execution
         await websocket.send_json({"status": "info", "message": f"Running {pipeline_type.value} analysis...", "step": "ANALYSIS_RUNNING"})
+        
+        async def send_progress(msg):
+            await websocket.send_json({"status": "info", "message": msg, "step": "ANALYSIS_SUBSTEP"})
+
         report = {}
         if pipeline_type == PipelineType.STRUCTURAL:
-             report = analyze_structural(file_path)
+             report = await analyze_structural(file_path, callback=send_progress)
         elif pipeline_type == PipelineType.VISUAL:
              report = analyze_visual(file_path)
         elif pipeline_type == PipelineType.CRYPTOGRAPHIC:
@@ -215,59 +232,74 @@ async def analyze_document(websocket: WebSocket, task_id: str):
         # 1. Normalize AI Score (0-100) -> (0-100)
         ai_score = reasoning_result.get("authenticity_score", 50)
         
-        # 2. Normalize SegFormer Score
-        # Local report uses 0.0 - 1.0 (fraud prob) -> We need Authenticity Score (100 - fraud)
-        # If pipeline is not Visual, this component is neutral (100 or N/A)
-        segformer_score = 100.0
-        if pipeline_type == PipelineType.VISUAL:
-             details = report.get('details', {})
-             sem = details.get("semantic_segmentation", {})
-             if isinstance(sem, dict):
-                 fraud_conf = sem.get("confidence_score", 0.0) # 0.0 to 1.0
-                 # If fraud_conf is high (1.0), authenticity is 0.
-                 segformer_score = max(0, 100 - (fraud_conf * 100))
+        # 2. Normalize SegFormer Score & Local Stats (ELA)
+        # Strategy: If multiple images exist, we take the MINIMUM authenticity score (Worst Case).
+        # i.e. If one image is fake, the document is fake.
         
-        # 3. Normalize Metadata/Structural Score
-        # Local report.score is a "Risk Score" (0.0 to 1.0+) -> Authenticity is (100 - risk*100)
+        segformer_score = 100.0
+        local_stats_score = 100.0
+        
+        details = report.get('details', {})
+        analyzed_images = details.get('analyzed_images', [])
+        
+        has_visual_components = False
+        
+        # Helper to extract scores from a visual report dict
+        def extract_visual_scores(vis_details):
+            # SegFormer
+            sf_val = 100.0
+            sem = vis_details.get("semantic_segmentation", {})
+            if isinstance(sem, dict):
+                fraud_conf = sem.get("confidence_score", 0.0)
+                sf_val = max(0, 100 - (fraud_conf * 100))
+                
+            # ELA
+            ela_val = vis_details.get('ela', {}).get('max_difference', 0)
+            ela_auth = max(0, 100 - (ela_val * 1.5)) # Slight scalar to make ELA more sensitive
+            
+            return sf_val, ela_auth
+
+        # Case A: Visual Pipeline (Single Image handled as root details)
+        if pipeline_type == PipelineType.VISUAL:
+            has_visual_components = True
+            sf, ela = extract_visual_scores(details)
+            segformer_score = sf
+            local_stats_score = ela
+            
+        # Case B: Structural with Embedded Images
+        elif analyzed_images:
+            has_visual_components = True
+            # Find the worst score among all images
+            min_sf = 100.0
+            min_ela = 100.0
+            
+            for img_entry in analyzed_images:
+                v_rep = img_entry.get('visual_report', {}).get('details', {})
+                sf, ela = extract_visual_scores(v_rep)
+                if sf < min_sf: min_sf = sf
+                if ela < min_ela: min_ela = ela
+            
+            segformer_score = min_sf
+            local_stats_score = min_ela
+
+        # 3. Normalize Metadata/Structural Score (for non-visual backup)
         risk_score = report.get('score', 0.0)
+        metadata_auth = max(0, 100 - (risk_score * 100))
         
         # 4. Apply Weights & Breakdown
         final_trust_score = 0
         score_breakdown = {}
         
-        if pipeline_type == PipelineType.VISUAL:
-            # For Visual:
-            # score from analyze_visual includes ELA/Quant/SegFormer.
-            # We want to isolate SegFormer for the 40% chunk.
-            # And use the REST of the visual stats for the 20% chunk.
-            
-            # Let's re-calculate a "Stats Only" score from the details to be cleaner
-            # details = report.get('details', {})
-            # ela_diff = details.get('ela', {}).get('max_difference', 0)
-            # quant_score ... 
-            
-            # Simplified approach: Use the generic risk_score as the "Local Stats" component
-            # BUT remove the SegFormer weight if it was added in pipelines.py.
-            # In pipelines.py, SegFormer adds 0.6. ELA adds 0.4. Quant adds 0.3.
-            # This is complex to unwind perfectly without changing pipelines.py.
-            # Alternative: Just use ELA/Noise metrics directly here for the 20%.
-            
-            details = report.get('details', {})
-            ela_val = details.get('ela', {}).get('max_difference', 0) # 0-255
-            # Norm ELA (0-100 authenticity): if diff is 0, auth is 100. if diff is >50, auth drops.
-            ela_auth = max(0, 100 - ela_val)
-            
-            local_stats_score = ela_auth # Use ELA/Noise as the base for "Local Stats"
-            
+        if has_visual_components:
+            # Full Formula: AI(40%) + SegFormer(40%) + ELA(20%)
             final_trust_score = (ai_score * 0.4) + (segformer_score * 0.4) + (local_stats_score * 0.2)
             score_breakdown = {
                 "AI Analysis (40%)": round(ai_score, 1),
-                "SegFormer (40%)": round(segformer_score, 1),
-                "ELA/Noise Stats (20%)": round(local_stats_score, 1)
+                "Visual Forensics (SegFormer) (40%)": round(segformer_score, 1),
+                "Compression Consistency (ELA) (20%)": round(local_stats_score, 1)
             }
         else:
-            # Structural/PDF
-            metadata_auth = max(0, 100 - (risk_score * 100))
+            # Structural/PDF Only
             final_trust_score = (ai_score * 0.6) + (metadata_auth * 0.4)
             score_breakdown = {
                 "AI Analysis (60%)": round(ai_score, 1),
@@ -300,6 +332,35 @@ async def analyze_document(websocket: WebSocket, task_id: str):
         convert_e = str(e) # avoid f-string inside await if fearful
 
 
+
+@app.delete("/api/cleanup/{task_id}")
+async def cleanup_task_files(task_id: str):
+    """
+    Deletes ALL files in the uploads directory, regardless of task ID.
+    This ensures a completely clean slate for the next session.
+    """
+    try:
+        deleted_count = 0
+        if os.path.exists(UPLOAD_DIR):
+            print(f"Global Cleanup requested. Wiping {UPLOAD_DIR}...")
+            # Iterate and delete everything
+            for filename in os.listdir(UPLOAD_DIR):
+                file_path = os.path.join(UPLOAD_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                        print(f"Deleted: {filename}")
+                        deleted_count += 1
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                        print(f"Deleted Directory: {filename}")
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting {filename}: {e}")
+                        
+        return {"status": "success", "deleted_count": deleted_count, "message": "All upload files wiped."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
