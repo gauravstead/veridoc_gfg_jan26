@@ -19,6 +19,7 @@ class PipelineType(Enum):
 def perform_ela(image_path: str, quality: int = 90) -> dict:
     """
     Performs Error Level Analysis (ELA) on an image using OpenCV.
+    Generates a visual ELA heatmap for the frontend.
     """
     try:
         # 1. Read Original
@@ -43,7 +44,15 @@ def perform_ela(image_path: str, quality: int = 90) -> dict:
         mean_diff = np.mean(gray_ela)
         std_dev = np.std(gray_ela)
         
-        # Cleanup
+        # 6. Generate Amplified ELA Image for Display
+        scale_factor = 15.0 
+        amplified = cv2.convertScaleAbs(ela_image, alpha=scale_factor, beta=0)
+        
+        ela_filename = os.path.basename(image_path) + ".ela.png"
+        ela_output_path = os.path.join(os.path.dirname(image_path), ela_filename)
+        cv2.imwrite(ela_output_path, amplified)
+        
+        # Cleanup temp
         if os.path.exists(resaved_path):
             os.remove(resaved_path)
             
@@ -51,9 +60,45 @@ def perform_ela(image_path: str, quality: int = 90) -> dict:
             "status": "success",
             "max_difference": float(max_diff),
             "mean_difference": float(mean_diff),
-            "std_deviation": float(std_dev)
+            "std_deviation": float(std_dev),
+            "ela_image_path": ela_filename
         }
         
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def perform_noise_analysis(image_path: str) -> dict:
+    """
+    Generates a Noise Variance Map to visualize high-frequency noise distribution.
+    Inconsistent noise patterns often indicate splicing.
+    """
+    try:
+        # Read image in grayscale
+        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return {"status": "error", "message": "Could not read image"}
+
+        # Denoise using a median filter (removes noise) and subtract from original to isolate noise
+        denoised = cv2.medianBlur(img, 3)
+        noise_map = cv2.absdiff(img, denoised)
+
+        # Enhance visibility of the noise
+        # 1. Normalize (stretch contrast)
+        norm_noise = cv2.normalize(noise_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        
+        # 2. Apply a colormap for easier visual inspection (e.g., JET or INFERNO)
+        # We'll use JET to make high noise 'hot' and low noise 'cold'
+        colored_noise = cv2.applyColorMap(norm_noise, cv2.COLORMAP_JET)
+
+        # Save
+        noise_filename = os.path.basename(image_path) + ".noise.png"
+        noise_output_path = os.path.join(os.path.dirname(image_path), noise_filename)
+        cv2.imwrite(noise_output_path, colored_noise)
+        
+        return {
+            "status": "success",
+            "noise_map_path": noise_filename
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -99,7 +144,8 @@ def analyze_quantization(image_path: str) -> dict:
         return {
             "status": "success",
             "histogram_gaps": int(zeros),
-            "suspicious": is_suspicious
+            "suspicious": is_suspicious,
+            "histogram_values": hist.flatten().tolist()
         }
         
     except Exception as e:
@@ -300,6 +346,13 @@ def analyze_visual(file_path: str):
              results["score"] += 0.6 
     except Exception as e:
         results["details"]["semantic_segmentation"] = f"Model Failed: {str(e)}"
+
+    # 4. Noise Variance Analysis (New Feature)
+    try:
+        noise_res = perform_noise_analysis(file_path)
+        results["details"]["noise_analysis"] = noise_res
+    except Exception as e:
+        results["details"]["noise_analysis"] = f"Noise Map Failed: {str(e)}"
 
     # Cap score
     results['score'] = min(results['score'], 1.0)

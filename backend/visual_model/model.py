@@ -24,10 +24,10 @@ def get_segformer_model(num_classes=2, pretrained=True, device=None):
             ignore_mismatched_sizes=True  # replaces ADE head safely
         )
     else:
-        model = SegformerForSemanticSegmentation.from_config(
-            model_name,
-            num_labels=num_classes
-        )
+        from transformers import SegformerConfig
+        config = SegformerConfig.from_pretrained(model_name)
+        config.num_labels = num_classes
+        model = SegformerForSemanticSegmentation(config)
 
     # Optional: freeze encoder for warm-up training
     for param in model.segformer.encoder.parameters():

@@ -19,13 +19,14 @@ try:
 except Exception as e:
     print(f"Warning: vertexai.init failed (likely due to placeholder PROJECT_ID): {e}")
 
-def run_semantic_reasoning(gcs_uri, mime_type="application/pdf"):
+def run_semantic_reasoning(gcs_uri, mime_type="application/pdf", local_report=None):
     """
     Sends a file from GCS directly to Gemini 1.5 Pro for forensic analysis.
     
     Args:
         gcs_uri: The path to the file (e.g., "gs://veridoc-bucket/uploads/file.pdf")
         mime_type: "application/pdf" or "image/jpeg"
+        local_report: (Optional) Dictionary containing local analysis findings (ELA, SegFormer, etc.)
     """
     
     try:
@@ -37,23 +38,66 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf"):
             uri=gcs_uri,
             mime_type=mime_type
         )
+        
+        # Prepare Context String from Local Report
+        # Prepare Context String from Local Report
+        local_context = "No prior local analysis available."
+        if local_report:
+            # We want to provide the FULL details to the AI so it can explain everything
+            # serialized in a readable format.
+            details = local_report.get('details', {})
+            flags = local_report.get('flags', [])
+            score = local_report.get('score', 0)
+            
+            # Create a clean summary object
+            context_data = {
+                "local_risk_score": score,
+                "technical_flags": flags,
+                "detailed_metrics": details
+            }
+            
+            local_context = f"""
+            FULL LOCAL FORENSIC ANALYSIS DATA:
+            {json.dumps(context_data, indent=2)}
+            
+            INSTRUCTIONS FOR USING THIS DATA:
+            1. This data comes from specialized code-based forensic tools (ELA, SegFormer, Metadata Analysis).
+            2. Trust these metrics. If SegFormer says "Tampered", it is highly likely.
+            3. Your job is to SYNTHESIZE these technical findings with your own Visual/Semantic analysis.
+            """
 
         # 3. Define the Prompt (The one above)
         prompt = """
-        Analyze the attached document using the forensic guidelines provided.
-        Return ONLY the JSON object. Do not add markdown formatting.
+        Analyze the attached document using the provided forensic context.
         """
         
         system_instruction = f"""
         You are VeriDoc-AI, an expert forensic document auditor. 
         Current Date: {datetime.now().strftime('%Y-%m-%d')}
-        Analyze the provided document for signs of forgery, manipulation, or inconsistencies.
-        If the document contains dates in the future relative to the Current Date, flag them only if they are unreasonable (e.g., a certificate dated 2050). Future dates within the current year or slightly ahead might be valid depending on context, but generally, a document created "tomorrow" is suspicious.
-        Output your findings in a structured JSON format with fields for:
-        - authenticity_score (0-100)
-        - flagged_issues (list of strings)
-        - summary (concise, user-friendly explanation, max 2 sentences)
-        - reasoning (detailed explanation for technical audiotrs)
+        
+        CONTEXT:
+        {local_context}
+        
+        OBJECTIVE:
+        Provide a "Unified Forensic Narrative" that explains the document's authenticity. 
+        You must correlate the "Local Forensic Analysis Data" with your own visual observations.
+        
+        OUTPUT FORMAT (JSON):
+        {{
+            "authenticity_score": (0-100) - Your confidence in the document's legitimacy.
+            "flagged_issues": [List of strings] - Focus on SEMANTIC inconsistencies (dates, logic) or VISUAL anomalies you see. *Do not* merely repeat the technical flags unless you add new context.
+            "summary": (String) - High-level executive summary (max 2 sentences).
+            "reasoning": (String) - THE MASTER EXPLANATION. This should be a detailed paragraph.
+                - EXPLICITLY REFERENCE the technical metrics (e.g., "The high ELA variance confirms editing...")
+                - Connect them to your visual findings (e.g., "...aligning with the visual mismatch in the font at the top right.").
+                - Explain what the Segment/Noise maps likely show based on their presence.
+                - This field MUST cover "Everything" - technical signals + semantic reasoning.
+            "bounding_boxes": [ {{ "box_2d": [ymin, xmin, ymax, xmax], "label": "description" }} ]
+        }}
+        
+        BOUNDING BOXES:
+        If you find specific visual anomalies, provide bounding boxes.
+        Format: [ymin, xmin, ymax, xmax] normalized to 0-1000.
         """
         # Note: The user mentioned "Paste the full SYSTEM_PROMPT string here" but didn't provide it in the snippet 
         # beyond the truncated version. I'm adding a reasonable placeholder.
@@ -71,7 +115,9 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf"):
         )
 
         # 5. Parse and Return
-        return json.loads(response.text)
+        result = json.loads(response.text)
+        result['model_name'] = model_name
+        return result
 
     except Exception as e:
         return {"error": f"Reasoning layer failed: {str(e)}"}

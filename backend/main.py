@@ -98,6 +98,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 @app.get("/")
 def read_root():
     return {"status": "online", "system": "VeriDoc Agentic Core"}
@@ -200,8 +203,83 @@ async def analyze_document(websocket: WebSocket, task_id: str):
              return
 
         # Semantic Reasoning
-        await websocket.send_json({"status": "info", "message": "Iniitializing Gemini 1.5 Pro Reasoning Agent...", "step": "REASONING_START"})
-        reasoning_result = run_semantic_reasoning(gcs_uri, mime_type=mime_type)
+        model_name_log = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
+        await websocket.send_json({"status": "info", "message": f"Initializing {model_name_log} Reasoning Agent...", "step": "REASONING_START"})
+        
+        # Pass local report to reasoning
+        reasoning_result = run_semantic_reasoning(gcs_uri, mime_type=mime_type, local_report=report)
+        
+        # --- HYBRID SCORING LOGIC ---
+        # Formula: Final = (AI_Score * 0.4) + (SegFormer_Score * 0.4) + (Metadata_Score * 0.2)
+        
+        # 1. Normalize AI Score (0-100) -> (0-100)
+        ai_score = reasoning_result.get("authenticity_score", 50)
+        
+        # 2. Normalize SegFormer Score
+        # Local report uses 0.0 - 1.0 (fraud prob) -> We need Authenticity Score (100 - fraud)
+        # If pipeline is not Visual, this component is neutral (100 or N/A)
+        segformer_score = 100.0
+        if pipeline_type == PipelineType.VISUAL:
+             details = report.get('details', {})
+             sem = details.get("semantic_segmentation", {})
+             if isinstance(sem, dict):
+                 fraud_conf = sem.get("confidence_score", 0.0) # 0.0 to 1.0
+                 # If fraud_conf is high (1.0), authenticity is 0.
+                 segformer_score = max(0, 100 - (fraud_conf * 100))
+        
+        # 3. Normalize Metadata/Structural Score
+        # Local report.score is a "Risk Score" (0.0 to 1.0+) -> Authenticity is (100 - risk*100)
+        risk_score = report.get('score', 0.0)
+        
+        # 4. Apply Weights & Breakdown
+        final_trust_score = 0
+        score_breakdown = {}
+        
+        if pipeline_type == PipelineType.VISUAL:
+            # For Visual:
+            # score from analyze_visual includes ELA/Quant/SegFormer.
+            # We want to isolate SegFormer for the 40% chunk.
+            # And use the REST of the visual stats for the 20% chunk.
+            
+            # Let's re-calculate a "Stats Only" score from the details to be cleaner
+            # details = report.get('details', {})
+            # ela_diff = details.get('ela', {}).get('max_difference', 0)
+            # quant_score ... 
+            
+            # Simplified approach: Use the generic risk_score as the "Local Stats" component
+            # BUT remove the SegFormer weight if it was added in pipelines.py.
+            # In pipelines.py, SegFormer adds 0.6. ELA adds 0.4. Quant adds 0.3.
+            # This is complex to unwind perfectly without changing pipelines.py.
+            # Alternative: Just use ELA/Noise metrics directly here for the 20%.
+            
+            details = report.get('details', {})
+            ela_val = details.get('ela', {}).get('max_difference', 0) # 0-255
+            # Norm ELA (0-100 authenticity): if diff is 0, auth is 100. if diff is >50, auth drops.
+            ela_auth = max(0, 100 - ela_val)
+            
+            local_stats_score = ela_auth # Use ELA/Noise as the base for "Local Stats"
+            
+            final_trust_score = (ai_score * 0.4) + (segformer_score * 0.4) + (local_stats_score * 0.2)
+            score_breakdown = {
+                "AI Analysis (40%)": round(ai_score, 1),
+                "SegFormer (40%)": round(segformer_score, 1),
+                "ELA/Noise Stats (20%)": round(local_stats_score, 1)
+            }
+        else:
+            # Structural/PDF
+            metadata_auth = max(0, 100 - (risk_score * 100))
+            final_trust_score = (ai_score * 0.6) + (metadata_auth * 0.4)
+            score_breakdown = {
+                "AI Analysis (60%)": round(ai_score, 1),
+                "Metadata/Structure (40%)": round(metadata_auth, 1)
+            }
+            
+        final_trust_score = round(final_trust_score)
+        
+        # Inject this back into reasoning_result
+        reasoning_result["original_ai_score"] = ai_score
+        reasoning_result["authenticity_score"] = final_trust_score
+        reasoning_result["score_breakdown"] = score_breakdown
         
         # Final Result
         final_response = {
