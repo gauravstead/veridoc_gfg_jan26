@@ -333,34 +333,7 @@ async def analyze_document(websocket: WebSocket, task_id: str):
 
 
 
-@app.delete("/api/cleanup/{task_id}")
-async def cleanup_task_files(task_id: str):
-    """
-    Deletes ALL files in the uploads directory, regardless of task ID.
-    This ensures a completely clean slate for the next session.
-    """
-    try:
-        deleted_count = 0
-        if os.path.exists(UPLOAD_DIR):
-            print(f"Global Cleanup requested. Wiping {UPLOAD_DIR}...")
-            # Iterate and delete everything
-            for filename in os.listdir(UPLOAD_DIR):
-                file_path = os.path.join(UPLOAD_DIR, filename)
-                try:
-                    if os.path.isfile(file_path) or os.path.islink(file_path):
-                        os.unlink(file_path)
-                        print(f"Deleted: {filename}")
-                        deleted_count += 1
-                    elif os.path.isdir(file_path):
-                        shutil.rmtree(file_path)
-                        print(f"Deleted Directory: {filename}")
-                        deleted_count += 1
-                except Exception as e:
-                    print(f"Error deleting {filename}: {e}")
-                        
-        return {"status": "success", "deleted_count": deleted_count, "message": "All upload files wiped."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
