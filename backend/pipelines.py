@@ -4,6 +4,10 @@ from enum import Enum
 from pypdf import PdfReader
 import cv2
 import numpy as np
+import logging
+
+# Suppress verbose pypdf warnings commonly triggered by malformed forensic samples
+logging.getLogger("pypdf").setLevel(logging.WARNING)
 from pyhanko.sign import validation
 from pyhanko.pdf_utils.reader import PdfFileReader
 
