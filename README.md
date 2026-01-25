@@ -110,12 +110,12 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
    
    **Option A: Using bash script (Linux/Mac)**
    ```bash
-   bash setup_models.sh
+   bash scripts/setup_trufor.sh
    ```
    
    **Option B: Using Python script (Cross-platform)**
    ```bash
-   python setup_models.py
+   python scripts/setup_trufor.py
    ```
    
    This downloads `trufor.pth.tar` from the official [TruFor repository](https://github.com/grip-unina/TruFor) maintained by GRIP-UNINA.

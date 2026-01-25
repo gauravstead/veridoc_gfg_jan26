@@ -1,5 +1,5 @@
-from visual_model.inference import run_tamper_detection
-from forensics.trufor_engine import TruForEngine
+from components.segformer.inference import run_tamper_detection
+from components.trufor.engine import TruForEngine
 import os
 from enum import Enum
 from pypdf import PdfReader
@@ -314,7 +314,7 @@ async def analyze_structural(file_path: str, callback=None):
 def analyze_cryptographic(file_path: str):
     """
     Pipeline C: Cryptographic Analysis (Signed PDFs)
-    Uses pyHanko to validate signatures.
+    Uses pyHanko to validate signatures with Trust Store usage.
     """
     results = {
         "pipeline": "Cryptographic Analysis (Digital Signatures)",
@@ -324,20 +324,29 @@ def analyze_cryptographic(file_path: str):
     }
     
     try:
+        from pyhanko_certvalidator import ValidationContext
+        
+        # 1. Setup Trust Store (Roots)
+        # Assuming trust store is at ../../resources/trust_store relative to this file
+        trust_store_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "trust_store")
+        
+        # 2. Open File
         with open(file_path, 'rb') as f:
             r = PdfFileReader(f)
+            
             if not r.embedded_signatures:
                 results['flags'].append("No Embedded Signatures found")
-                # Not necessarily bad, but for this pipeline it's a null result.
                 results['details']['signature_count'] = 0
                 return results
                 
             sig_status = []
+            
+            # Create Validation Context (allow online fetching of CRLs)
+            vc = ValidationContext(allow_fetching=True)
+            
             for sig in r.embedded_signatures:
-                # Validate the signature
-                # Note: This is a basic validation check. 
-                # In a real scenario, you'd configure trust anchors (VC).
-                val_status = validation.validate_pdf_signature(sig)
+                # Validate with Context
+                val_status = validation.validate_pdf_signature(sig, validation_context=vc)
                 
                 status_summary = {
                     "field": sig.field_name,
@@ -345,20 +354,22 @@ def analyze_cryptographic(file_path: str):
                     "intact": val_status.intact,
                     "trusted": val_status.trusted,
                     "revoked": val_status.revoked,
-                    "signing_time": str(val_status.signing_time)
+                    "signing_time": str(val_status.signing_time),
+                    "md_algorithm": val_status.md_algorithm,
+                    "coverage": str(val_status.coverage)
                 }
                 sig_status.append(status_summary)
                 
                 if not val_status.intact:
-                     results['flags'].append(f"Signature {sig.field_name} is BROKEN/MODIFIED")
-                     results['score'] += 1.0 # Critical fail
-                elif not val_status.trusted:
-                     results['flags'].append(f"Signature {sig.field_name} is UNTRUSTED (Self-signed or unknown root)")
-                     results['score'] += 0.2 # Warning, not necessarily fake
+                     results['flags'].append(f"CRITICAL: Signature {sig.field_name} is BROKEN (Document altered after signing)")
+                     results['score'] += 1.0 
                 elif val_status.revoked:
-                     results['flags'].append(f"Signature {sig.field_name} certificate is REVOKED")
+                     results['flags'].append(f"CRITICAL: Certificate for {sig.field_name} has been REVOKED")
                      results['score'] += 1.0
-                     
+                elif not val_status.trusted:
+                     results['flags'].append(f"WARNING: Signature {sig.field_name} is Untrusted (Self-Signed or Unknown Root)")
+                     results['score'] += 0.3 
+
             results['details']['signatures'] = sig_status
             results['details']['signature_count'] = len(sig_status)
             
@@ -404,8 +415,6 @@ async def analyze_visual(file_path: str):
             results['flags'].append("Suspicious Histogram (Potential Double Quantization)")
             results['score'] += 0.3
             
-
-             
     # 3. Semantic Segmentation (SegFormer-B0)
     try:
         seg_res = run_tamper_detection(file_path)

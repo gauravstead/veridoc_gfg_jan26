@@ -7,12 +7,14 @@ import sys
 from pathlib import Path
 
 # Add backend root to sys.path 
-backend_root = Path(__file__).resolve().parent.parent
+backend_root = Path(__file__).resolve().parent.parent.parent
 if str(backend_root) not in sys.path:
     sys.path.append(str(backend_root))
 
 # Add trufor_core to sys.path so 'import lib' works
-trufor_core_path = backend_root / 'models' / 'trufor_core'
+# Add trufor_core to sys.path so 'import lib' works
+trufor_core_path = backend_root / 'components' / 'trufor' / 'core'
+# The code inside 'trufor_core' does 'from lib.config...', so we need 'trufor_core' folder in sys.path
 if str(trufor_core_path) not in sys.path:
     sys.path.append(str(trufor_core_path))
 

@@ -148,7 +148,10 @@ env/
 *.so
 
 # TruFor Model Weights (download via setup script)
-backend/models/trufor_core/weights/trufor.pth.tar
-
+backend/components/trufor/core/weights/trufor.pth.tar
 backend/models/trufor_core/pretrained_models/
 backend/uploads/
+backend/venv/
+backend/resources/trust_store/*.pem
+backend/resources/trust_store/*.crt
+backend/resources/trust_store/*.cer

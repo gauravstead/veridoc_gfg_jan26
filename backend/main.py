@@ -7,8 +7,8 @@ import uuid
 import time
 from contextlib import asynccontextmanager
 
-from pipelines import determine_pipeline, PipelineType, analyze_structural, analyze_visual, analyze_cryptographic
-from reasoning import run_semantic_reasoning
+from services.pipeline_orchestrator import determine_pipeline, PipelineType, analyze_structural, analyze_visual, analyze_cryptographic
+from services.forensic_reasoning import run_semantic_reasoning
 from pypdf import PdfReader
 from google.cloud import storage
 from dotenv import load_dotenv

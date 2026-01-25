@@ -15,7 +15,7 @@ from urllib.error import URLError
 # Configuration
 WEIGHTS_URL = "https://www.grip.unina.it/download/prog/TruFor/TruFor_weights.zip"
 EXPECTED_MD5 = "7bee48f3476c75616c3c5721ab256ff8"
-WEIGHTS_DIR = Path("models/trufor_core/weights")
+WEIGHTS_DIR = Path("components/trufor/core/weights")
 WEIGHTS_FILE = WEIGHTS_DIR / "trufor.pth.tar"
 TEMP_ZIP = "TruFor_weights.zip"
 
