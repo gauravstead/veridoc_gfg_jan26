@@ -150,3 +150,4 @@ env/
 # TruFor Model Weights (download via setup script)
 backend/models/trufor_core/weights/trufor.pth.tar
 
+backend/models/trufor_core/pretrained_models/
