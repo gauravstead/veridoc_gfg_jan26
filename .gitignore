@@ -151,3 +151,4 @@ env/
 backend/models/trufor_core/weights/trufor.pth.tar
 
 backend/models/trufor_core/pretrained_models/
+backend/uploads/
