@@ -18,29 +18,32 @@ The system operates on a **Conditional Logic Model**, utilizing a Python (FastAP
 
 ### 🕵️‍♂️ Pipeline A: Digital Structural Analysis
 *   **Target:** Native PDFs (digitally generated documents).
-*   **Methodology:** Deterministic Binary File Structure Parsing.
+*   **Methodology:** Deterministic Binary File Structure Parsing & Deep Content Inspection.
 *   **Libraries Used:** `pypdf`
 
 ![Pipeline A Architecture](readme/pipe1.png)
 
 #### Key Techniques Implemented:
 1.  **Incremental Update & XRef Analysis:** We scan raw file bytes for multiple `%%EOF` markers and disjointed Cross-Reference (`xref`) tables. A count > 1 indicates that the file has been "incrementally updated" or spliced after initial creation.
-2.  **Hidden Payload Detection:** Scans the document structure for "Orphaned" objects, Embedded Files, and JavaScript. These are strong indicators of malicious payloads or hidden/deleted content (e.g., white-on-white text) often missed by visual checks.
-3.  **Metadata Forensics:** Extraction of file metadata to identify suspicious producers (e.g., "Phantom", "GPL Ghostscript") often used in document manipulation tools vs. standard office software.
+2.  **Deep Image Inspection:** Automatically extracts embedded images from PDF pages and routes them to the **Visual Forensics Lab** (Pipeline B) to detect if a signature or stamp was pasted in.
+3.  **Hidden Payload Detection:** Scans the document structure for "Orphaned" objects, Embedded Files, and JavaScript. These are strong indicators of malicious payloads or hidden/deleted content.
+4.  **Metadata Forensics:** Extraction of file metadata to identify suspicious producers (e.g., "Phantom", "GPL Ghostscript") often used in document manipulation tools.
 
 <br>
 
 ### 👁️ Pipeline B: Visual Statistical Analysis
-*   **Target:** Scanned documents, JPEGs, Screenshots (Raster data).
-*   **Methodology:** Statistical Signal Processing & Computer Vision.
-*   **Libraries Used:** `opencv-python`, `numpy`, `scikit-image`
+*   **Target:** Scanned documents, JPEGs, Screenshots, and Extracted PDF Assets.
+*   **Methodology:** Statistical Signal Processing & Deep Learning.
+*   **Libraries Used:** `opencv-python`, `numpy`, `torch`, `transformers`, `trufor`
 
 ![Pipeline B Architecture](readme/pipe2.png)
 
 #### Key Techniques Implemented:
-1.  **Error Level Analysis (ELA):** We perform ELA by re-saving the image at a known quality (90%) and computing the absolute difference from the original. High mean difference scores (>15) indicate potential manipulation or resaving artifacts.
-2.  **Histogram / Quantization Analysis:** A simplified check for "Double Quantization" by analyzing the pixel intensity histogram. We detect "gaps" (zero-bins) in the histogram, which often occur when a JPEG is decompressed and re-compressed.
-3.  **Semantic Segmentation (Planned):** Integration of a **SegFormer-B0** model (fine-tuned on DocTamper) is currently in development/pending to provide pixel-level splice detection.
+1.  **TruFor (True Forensics):** Integrates the state-of-the-art **TruFor** engine (Noiseprint++ / CMX) to generate high-fidelity anomaly heatmaps. This detects splicing by analyzing camera sensor noise inconsistencies invisible to the naked eye.
+2.  **Semantic Segmentation:** Utilizes a **SegFormer-B0** model (fine-tuned on DocTamper) to perform pixel-level tampering detection, specifically trained to spot copy-move forgeries in document layouts.
+3.  **Noise Variance Analysis:** visualizing high-frequency noise distribution to spot pasted regions that have a different noise profile than the background.
+4.  **Error Level Analysis (ELA):** Re-saves images at known quality (90%) to highlight compression artifacts. High difference scores indicate manipulation.
+5.  **Double Quantization:** Analyzes histogram periodicity to detect if an image has been decompressed and re-compressed.
 
 <br>
 
@@ -61,7 +64,7 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
 
 *   **Technology:** **Google Vertex AI (Gemini 2.5 Flash)**.
 *   **Methodology:** Single-Shot Forensic Analysis.
-*   **Process:** The system sends the document (via secure GCS URI) to the Gemini 2.5 Flash model with a specialized system prompt acting as an "Expert Forensic Auditor". The model analyzes the content for logical inconsistencies (dates, totals, visual anomalies) and returns a structured JSON verdict.
+*   **Process:** The system sends the document analysis report to the Gemini 2.5 Flash model with a specialized system prompt acting as an "Expert Forensic Auditor". The model analyzes the content for logical inconsistencies and returns a structured verdict.
 *   **Libraries Used:** `google-cloud-aiplatform`, `vertexai`.
 
 ---
@@ -143,16 +146,17 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
 
 ## 💻 Technical Specifications & Libraries
 
-VeriDoc leverages a robust Python ecosystem for deterministic analysis and API orchestration.
+VeriDoc leverages a robust logic-based ecosystem for deterministic analysis and API orchestration.
 
 | Component | Library / Tool | Purpose |
 | :--- | :--- | :--- |
+| **Frontend** | `React 19`, `Vite`, `TailwindCSS` | Modern, responsive UI with real-time analysis dashboards. |
 | **Orchestration** | `fastapi`, `uvicorn` | High-performance async API for handling concurrent analysis requests. |
-| **Structural** | `pypdf` | Parsing PDF internal structure and detecting incremental updates. |
-| **Visual** | `opencv-python`, `numpy` | High-speed matrix operations for ELA and histogram analysis. |
+| **Structural** | `pypdf` | Parsing PDF internal structure, extracting images, and detecting incremental updates. |
+| **Visual (Deep)** | `torch`, `transformers` | Running SegFormer and TruFor deep learning models. |
+| **Visual (Signal)** | `opencv-python`, `numpy` | High-speed matrix operations for ELA and noise analysis. |
 | **Cryptographic** | `pyhanko`, `cryptography` | ASN.1 parsing and X.509 certificate validation. |
 | **AI Inference** | `google-cloud-aiplatform` | Interface for Vertex AI and Gemini models. |
-| **Storage** | `google-cloud-storage` | Secure file staging for AI analysis. |
 
 ---
 
@@ -160,7 +164,7 @@ VeriDoc leverages a robust Python ecosystem for deterministic analysis and API o
 
 The architecture is built on a **Serverless First** principle using Google Cloud Platform to ensure high availability and security.
 
-### 1.  **Local Ingestion:** Fast, local checks (Pipelines A/B/C) run on the application server (Cloud Run) to filter obvious fakes without incurring AI costs.
+1.  **Local Ingestion:** Fast, local checks (Pipelines A/B/C) run on the application server (Cloud Run) to filter obvious fakes without incurring AI costs.
 2.  **Secure Staging:** Files are uploaded to **Google Cloud Storage (GCS)** buckets with strict lifecycle policies.
 3.  **AI Analysis:** Vertex AI accesses the file directly from GCS (`gs://...` URI), ensuring data never leaves the secure cloud perimeter during analysis.
 
@@ -170,6 +174,6 @@ The architecture is built on a **Serverless First** principle using Google Cloud
 
 ![Impact Metrics](readme/impact.png)
 
-*   **Defensible Verification:** Moves analysis from subjective suspicion to mathematical proof (e.g., EOF markers, Signature validation).
+*   **Defensible Verification:** Moves analysis from subjective suspicion to mathematical proof (e.g., EOF markers, Signature validation, TruFor Heatmaps).
 *   **Explainable AI (XAI):** Provides detailed reasoning via Gemini's analysis, rather than just "black box" confidence scores.
 *   **Operational Velocity:** Automates the initial forensic pass, reducing manual review time significantly.
