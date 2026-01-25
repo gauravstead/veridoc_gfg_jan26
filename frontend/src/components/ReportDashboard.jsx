@@ -1,582 +1,812 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
     ShieldCheck, ShieldAlert, FileSearch, Activity, Lock,
     ChevronRight, AlertCircle, GitBranch, Terminal, Layers,
     Check, X, BarChart3, Fingerprint, FileType, Search, Eye,
-    ZoomIn, ZoomOut, Maximize
+    ZoomIn, ZoomOut, Maximize, ScanEye, MousePointer2, AlertTriangle,
+    Share2, Download, RefreshCw
 } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence, useSpring, useTransform } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, ResponsiveContainer, Cell } from 'recharts';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
+
+// --- Sub-Components ---
+
+function ScoreRing({ score, isSuspicious }) {
+    const radius = 60;
+    const circumference = 2 * Math.PI * radius;
+    const springValue = useSpring(0, { stiffness: 60, damping: 15 });
+    const displayValue = useTransform(springValue, (latest) => Math.round(latest));
+
+    useEffect(() => {
+        springValue.set(score);
+    }, [score, springValue]);
+
+    const strokeDashoffset = useTransform(springValue, (latest) => {
+        return circumference - (latest / 100) * circumference;
+    });
+
+    return (
+        <div className="relative flex items-center justify-center w-40 h-40">
+            {/* Background Circle */}
+            <svg className="absolute w-full h-full transform -rotate-90">
+                <circle
+                    cx="80" cy="80" r={radius}
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    className="text-zinc-100 dark:text-zinc-800"
+                />
+                <motion.circle
+                    cx="80" cy="80" r={radius}
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    fill="transparent"
+                    strokeDasharray={circumference}
+                    style={{ strokeDashoffset }}
+                    strokeLinecap="round"
+                    className={isSuspicious ? 'text-red-500' : 'text-emerald-500'}
+                />
+            </svg>
+            <div className="flex flex-col items-center">
+                <motion.span className={`text-4xl font-black tabular-nums ${isSuspicious ? 'text-red-600 dark:text-red-400' : 'text-zinc-800 dark:text-white'}`}>
+                    {displayValue}
+                </motion.span>
+                <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">Trust Score</span>
+            </div>
+        </div>
+    );
+}
+
+function MetricCard({ title, icon: Icon, children, className = "", noPadding = false }) {
+    return (
+        <div className={`rounded-3xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm flex flex-col overflow-hidden ${className}`}>
+            <div className="flex items-center gap-2 px-6 py-4 border-b border-zinc-100 dark:border-zinc-800/50 bg-zinc-50/50 dark:bg-zinc-900/50">
+                <Icon className="w-4 h-4 text-zinc-400" />
+                <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">{title}</span>
+            </div>
+            <div className={`flex-1 ${noPadding ? '' : 'p-6'}`}>
+                {children}
+            </div>
+        </div>
+    );
+}
+
+// --- Lightbox Component ---
+const Lightbox = ({ isOpen, onClose, data, activeLayer, setActiveLayer }) => {
+    if (!isOpen || !data) return null;
+
+    const { currentFilename, currentDetails, boundingBoxes } = data;
+    const [zoom, setZoom] = useState(1);
+
+    return (
+        <AnimatePresence>
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 sm:p-8 backdrop-blur-sm"
+                onClick={onClose}
+            >
+                {/* Close Button */}
+                <button
+                    onClick={onClose}
+                    className="absolute top-6 right-6 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-full text-white transition-colors z-50 border border-zinc-700"
+                >
+                    <X className="w-6 h-6" />
+                </button>
+
+                {/* Lightbox Zoom Controls */}
+                <div className="absolute top-6 left-6 flex flex-col gap-2 z-50 bg-zinc-800/80 backdrop-blur rounded-lg p-1 border border-zinc-700">
+                    <button onClick={(e) => { e.stopPropagation(); setZoom(z => Math.min(z + 0.5, 5)) }} className="p-2 hover:bg-zinc-700 rounded text-zinc-300"><ZoomIn className="w-5 h-5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setZoom(1) }} className="p-2 hover:bg-zinc-700 rounded text-zinc-300"><RefreshCw className="w-5 h-5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setZoom(z => Math.max(z - 0.5, 0.5)) }} className="p-2 hover:bg-zinc-700 rounded text-zinc-300"><ZoomOut className="w-5 h-5" /></button>
+                </div>
+
+                <div className="w-full h-full flex flex-col items-center justify-center relative overflow-hidden" onClick={e => e.stopPropagation()}>
+                    <div className="flex-1 w-full flex items-center justify-center overflow-hidden">
+                        <motion.div
+                            drag
+                            dragConstraints={{ left: -500, right: 500, top: -500, bottom: 500 }}
+                            className="relative inline-block shadow-2xl"
+                            animate={{ scale: zoom }}
+                            transition={{ type: 'spring', damping: 20 }}
+                        >
+                            <img
+                                src={`http://localhost:8000/static/uploads/${currentFilename}`}
+                                alt="Document Fullscreen"
+                                className="block max-h-[75vh] w-auto object-contain rounded-lg"
+                            />
+                            {/* Overlays */}
+                            {activeLayer === 'heatmap' && currentDetails?.semantic_segmentation?.heatmap_image && (
+                                <img src={currentDetails.semantic_segmentation.heatmap_image} className="absolute inset-0 w-full h-full object-contain pointer-events-none z-10" />
+                            )}
+                            {activeLayer === 'trufor' && currentDetails?.trufor?.heatmap_path && (
+                                <img src={`http://localhost:8000/static/uploads/${currentDetails.trufor.heatmap_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-90 z-10" />
+                            )}
+                            {activeLayer === 'ela' && currentDetails?.ela?.ela_image_path && (
+                                <img src={`http://localhost:8000/static/uploads/${currentDetails.ela.ela_image_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90 z-10" />
+                            )}
+                            {activeLayer === 'noise' && currentDetails?.noise_analysis?.noise_map_path && (
+                                <img src={`http://localhost:8000/static/uploads/${currentDetails.noise_analysis.noise_map_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90 z-10" />
+                            )}
+                            {activeLayer === 'ai_analysis' && boundingBoxes.map((box, idx) => {
+                                const [ymin, xmin, ymax, xmax] = box.box_2d;
+                                return (
+                                    <div key={idx} className="absolute border-2 border-red-500 bg-red-500/10 z-20" style={{ top: `${ymin / 10}%`, left: `${xmin / 10}%`, height: `${(ymax - ymin) / 10}%`, width: `${(xmax - xmin) / 10}%` }}></div>
+                                );
+                            })}
+                        </motion.div>
+                    </div>
+
+                    <div className="h-24 w-full flex flex-col items-center justify-center gap-3 z-50 pointer-events-auto">
+                        <div className="text-zinc-400 text-sm font-medium">
+                            {activeLayer === 'original' && "Original Source"}
+                            {activeLayer === 'heatmap' && "SegFormer Analysis"}
+                            {activeLayer === 'trufor' && "TruFor Sensor Noise"}
+                            {activeLayer === 'ela' && "Error Level Analysis"}
+                            {activeLayer === 'noise' && "Noise Variance"}
+                            {activeLayer === 'ai_analysis' && "Vision Intelligence"}
+                        </div>
+                        <div className="bg-zinc-800 p-1.5 rounded-2xl flex gap-1 shadow-xl border border-zinc-700 overflow-x-auto max-w-full">
+                            {['original', 'heatmap', 'trufor', 'ela', 'noise', 'ai_analysis'].map(layer => (
+                                <button
+                                    key={layer}
+                                    onClick={(e) => { e.stopPropagation(); setActiveLayer(layer); }}
+                                    className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all ${activeLayer === layer ? 'bg-white text-black shadow-lg scale-105' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/10'}`}
+                                >
+                                    {layer === 'heatmap' ? 'SegFormer' : layer === 'ai_analysis' ? 'Vision AI' : layer.charAt(0).toUpperCase() + layer.slice(1)}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </motion.div>
+        </AnimatePresence>
+    );
+};
 
 export function ReportDashboard({ data, onReset }) {
     if (!data) return null;
 
     const { report, pipeline_used, reasoning } = data;
-
-    // Use AI Reasoner output if available for the high-level verdict
-    // Default to hybrid score if available, else original AI score
     const aiScore = reasoning?.authenticity_score ?? 0;
     const aiIssues = reasoning?.flagged_issues || [];
-    const aiSummary = reasoning?.summary;
     const aiDetail = reasoning?.reasoning;
-    const modelName = reasoning?.model_name || "Gemini AI"; // Dynamic Model Name
+    const modelName = reasoning?.model_name || "Gemini AI";
 
-    const [showFullReasoning, setShowFullReasoning] = useState(false);
-    const [activeLayer, setActiveLayer] = useState('heatmap'); // 'original', 'heatmap', 'ela', 'noise', 'ai_analysis'
+    const isSuspicious = aiScore < 70;
+
+    // --- Visual Lab State ---
+    const [activeLayer, setActiveLayer] = useState('heatmap');
     const [zoomLevel, setZoomLevel] = useState(1);
-    const [selectedImageIndex, setSelectedImageIndex] = useState(0); // For multiple embedded images
+    const [selectedImageIndex, setSelectedImageIndex] = useState(0);
     const containerRef = useRef(null);
+    const [isExporting, setIsExporting] = useState(false);
+
+    // Lightbox State
+    const [showLightbox, setShowLightbox] = useState(false);
 
     const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 0.5, 4));
     const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 0.5, 1));
-    const handleResetZoom = () => setZoomLevel(1);
+    const handleMaximize = () => setShowLightbox(true);
 
-    // Determine what text to show primarily
-    let primaryText = "No details provided.";
-    if (reasoning?.error) {
-        primaryText = `Analysis Error: ${reasoning.error}`;
-    } else if (aiSummary) {
-        primaryText = aiSummary;
-    } else if (aiDetail) {
-        primaryText = aiDetail;
+    // Prepare Visual Data
+    let currentDetails = report.details;
+    let currentFilename = data.filename;
+    const embeddedImages = report.details?.analyzed_images || [];
+    const hasEmbedded = embeddedImages.length > 0;
+
+    if (hasEmbedded) {
+        const selected = embeddedImages[selectedImageIndex] || embeddedImages[0];
+        currentDetails = selected.visual_report.details;
+        currentFilename = selected.filename;
     }
 
-    // Determine status based on AI Score
-    const isSuspicious = aiScore < 70;
-    const displayScore = aiScore;
-
-    // Merge flags from local pipeline and AI
-    // Merge flags from local pipeline and AI
-    // Deduplicate: If an AI flag is very similar to a local flag, ignore the AI one (since local source is primary)
-    const localFlags = new Set(report.flags || []);
-    const uniqueAiIssues = aiIssues.filter(issue => {
-        // Simple fuzzy match check: cancel if issue contains "SegFormer" and we already have a SegFormer flag
-        if (issue.includes("SegFormer") && Array.from(localFlags).some(f => f.includes("SegFormer"))) return false;
-        if (issue.includes("ELA") && Array.from(localFlags).some(f => f.includes("ELA"))) return false;
-        return !localFlags.has(issue);
-    });
-
-    const allFlags = [
-        ...Array.from(localFlags),
-        ...uniqueAiIssues
-    ];
-
-    // Parse Bounding Boxes
     const boundingBoxes = reasoning?.bounding_boxes || [];
 
-    // Copy the getMethods helper here to ensure it's in scope if not already
-    const getMethods = (pipeline) => {
-        const p = pipeline?.toLowerCase() || '';
-        if (p.includes('structural')) {
-            return [
-                { name: 'Incremental Updates', desc: 'Scans for multiple EOF markers' },
-                { name: 'Metadata Analysis', desc: 'Checks Producer/Creator consistency' },
-                { name: 'Syntax Parsing', desc: 'Validates internal PDF structure' }
-            ];
-        } else if (p.includes('visual')) {
-            return [
-                { name: 'Error Level Analysis', desc: 'Detects compression anomalies' },
-                { name: 'Quantization Check', desc: 'Analyzes DCT coefficient histograms' },
-                { name: 'Variance Stats', desc: 'Measures pixel intensity deviation' }
-            ];
+    // --- Conditional Layer Logic ---
+    const availableLayers = ['original'];
+    if (currentDetails?.semantic_segmentation?.heatmap_image) availableLayers.push('heatmap');
+    if (currentDetails?.trufor?.heatmap_path) availableLayers.push('trufor');
+    if (currentDetails?.ela?.ela_image_path) availableLayers.push('ela');
+    if (currentDetails?.noise_analysis?.noise_map_path) availableLayers.push('noise');
+    if (boundingBoxes.length > 0) availableLayers.push('ai_analysis');
+
+    // --- Smart Box Logic ---
+    // 1. Visual Lab Condition: Checks if any visual layers OR signatures exist (we'll just use layers for visuals)
+    const hasVisuals = availableLayers.length > 1 || hasEmbedded;
+
+    // 2. Signature Condition: Checks if the signature pipeline ran (key exists)
+    const hasSignatures = report.details?.signatures && report.details.signatures.length !== undefined;
+
+    // --- Dynamic Layout Spans ---
+    const verdictSpan = hasVisuals ? "col-span-12 lg:col-span-4" : "col-span-12 lg:col-span-12";
+    const keyFindingsSpan = hasSignatures ? "col-span-12 lg:col-span-6" : "col-span-12 lg:col-span-12";
+
+
+    // Bundle data for Lightbox
+    const visualData = {
+        currentFilename,
+        currentDetails,
+        boundingBoxes,
+        modelName,
+        availableLayers
+    };
+
+    // --- PDF Export Logic ---
+    const handleExportPDF = async () => {
+        setIsExporting(true);
+        const doc = new jsPDF();
+        const pageWidth = doc.internal.pageSize.getWidth();
+
+        // --- Header ---
+        doc.setFontSize(22);
+        doc.setTextColor(isSuspicious ? 220 : 40, isSuspicious ? 50 : 40, 50);
+        doc.text(isSuspicious ? "SUSPICIOUS DOCUMENT REPORT" : "VERIFIED DOCUMENT REPORT", pageWidth / 2, 20, { align: 'center' });
+
+        doc.setFontSize(10);
+        doc.setTextColor(100);
+        doc.text(`Generated: ${new Date().toLocaleString()}`, pageWidth - 15, 10, { align: 'right' });
+        doc.text(`File: ${currentFilename}`, 15, 30);
+        doc.text(`Trust Score: ${aiScore}/100`, 15, 36);
+
+        // --- Executive Summary ---
+        doc.setLineWidth(0.5);
+        doc.line(15, 42, pageWidth - 15, 42);
+
+        doc.setFontSize(14);
+        doc.setTextColor(0);
+        doc.text("Executive Summary", 15, 52);
+
+        doc.setFontSize(10);
+        const splitDetail = doc.splitTextToSize(aiDetail || "No detailed reasoning provided.", pageWidth - 30);
+        doc.text(splitDetail, 15, 60);
+
+        let cursorY = 60 + (splitDetail.length * 5);
+
+        // --- Key Findings ---
+        if (aiIssues.length > 0) {
+            cursorY += 10;
+            doc.setFontSize(12);
+            doc.text("Risk Indicators", 15, cursorY);
+            cursorY += 6;
+            doc.setFontSize(10);
+            doc.setTextColor(200, 50, 50);
+            aiIssues.forEach(issue => {
+                doc.text(`• ${issue}`, 20, cursorY);
+                cursorY += 5;
+            });
+            doc.setTextColor(0);
         }
-        return [];
+
+        // --- Digital Signatures (AutoTable) ---
+        if (hasSignatures) {
+            cursorY += 10;
+            doc.setFontSize(12);
+            doc.text("Digital Signatures", 15, cursorY);
+
+            const sigBody = report.details.signatures.map(sig => [
+                sig.signer_name || sig.field,
+                sig.valid ? "Valid" : "Invalid",
+                sig.trusted ? "Trusted" : "Untrusted",
+                sig.issuer || "Unknown",
+                sig.signing_time
+            ]);
+
+            doc.autoTable({
+                head: [['Signer', 'Integrity', 'Trust', 'Issuer', 'Timestamp']],
+                body: sigBody,
+                startY: cursorY + 4,
+                theme: 'striped',
+                headStyles: { fillColor: [40, 40, 50] }
+            });
+            cursorY = doc.lastAutoTable.finalY + 10;
+        }
+
+        // --- Visual Evidence ---
+        if (hasVisuals) {
+            doc.addPage();
+            doc.setFontSize(16);
+            doc.text("Visual Forensic Evidence", pageWidth / 2, 20, { align: 'center' });
+            cursorY = 40;
+
+            const loadImage = (src) => new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = "Anonymous";
+                img.src = src;
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+            });
+
+            const drawLayer = async (name, url, desc) => {
+                if (cursorY > 200) { doc.addPage(); cursorY = 20; }
+
+                doc.setFontSize(12);
+                doc.text(name, 15, cursorY);
+
+                try {
+                    // Fetch image via proxy or ensure CORS is handled
+                    const img = await loadImage(`http://localhost:8000/static/uploads/${url}`);
+                    const ratio = img.height / img.width;
+                    const targetW = 120;
+                    const targetH = targetW * ratio;
+
+                    doc.addImage(img, 'JPEG', 15, cursorY + 5, targetW, targetH);
+
+                    doc.setFontSize(9);
+                    doc.setTextColor(100);
+                    const splitDesc = doc.splitTextToSize(desc, pageWidth - 150);
+                    doc.text(splitDesc, 140, cursorY + 10);
+
+                    cursorY += targetH + 20;
+                } catch (e) {
+                    doc.text("(Image Loading Failed - Check Server CORS)", 15, cursorY + 10);
+                    console.error(e);
+                    cursorY += 30;
+                }
+                doc.setTextColor(0);
+            };
+
+            await drawLayer("Original Document", currentFilename, "The unprocessed input file.");
+
+            if (currentDetails?.semantic_segmentation?.heatmap_image)
+                await drawLayer("Splice Detection (SegFormer)",
+                    currentDetails.semantic_segmentation.heatmap_image.split('/').pop(), // Extract filename
+                    "Red areas indicate regions with high probability of digital manipulation such as splicing or copy-move.");
+
+            if (currentDetails?.trufor?.heatmap_path)
+                await drawLayer("Sensor Noise Analysis (TruFor)",
+                    currentDetails.trufor.heatmap_path,
+                    "Highlights inconsistencies in camera sensor noise patterns. Alien content often disrupts the uniform noise field.");
+
+            if (currentDetails?.ela?.ela_image_path)
+                await drawLayer("Error Level Analysis (ELA)",
+                    currentDetails.ela.ela_image_path,
+                    "Visualizes compression artifacts. Bright white noise often suggests the image was recently resaved or edited.");
+        }
+
+        doc.save(`${currentFilename}_forensic_report.pdf`);
+        setIsExporting(false);
     };
 
-    const methods = getMethods(pipeline_used);
+    // --- Share Logic ---
+    const [isCopied, setIsCopied] = useState(false);
 
-    // --- Visualization Helpers ---
+    const handleShare = async () => {
+        // Generate a useful text summary for email/Slack/Teams
+        const shareText = `
+VeriDoc Forensic Report
+-----------------------
+File: ${currentFilename}
+Trust Score: ${aiScore}/100 (${isSuspicious ? 'Suspicious' : 'Authentic'})
+Date: ${new Date().toLocaleString()}
 
-    const renderVisualMetrics = (details) => {
-        // Normalize ELA difference (0-255) to a score (0-100 where 100 is best/lowest diff)
-        const elaScore = Math.max(0, 100 - (details.ela?.max_difference || 0));
-        const varScore = Math.max(0, 100 - ((details.variance?.average_diff || 0) * 10));
+Risk Indicators:
+${aiIssues.length > 0 ? aiIssues.map(i => `- ${i}`).join('\n') : '- No critical anomalies detected.'}
 
-        // Prepare Histogram Data
-        const histData = details.quantization?.histogram_values?.map((val, idx) => ({
-            bin: idx,
-            count: val
-        })) || [];
+Digital Signatures:
+${hasSignatures ? report.details.signatures.map(s => `- ${s.signer_name || s.field}: ${s.valid ? 'VALID' : 'INVALID'} (${s.trusted ? 'Trusted' : 'Untrusted'})`).join('\n') : '- None found.'}
 
-        return (
-            <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="bg-zinc-50 dark:bg-zinc-900 p-4 rounded-lg border border-zinc-200 dark:border-zinc-800">
-                        <div className="flex justify-between items-center mb-2">
-                            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Compression Consistency</span>
-                            <span className="text-xs font-mono text-zinc-500 dark:text-zinc-400">{Math.round(elaScore)}%</span>
-                        </div>
-                        <div className="w-full bg-zinc-200 dark:bg-zinc-700 rounded-full h-2">
-                            <motion.div
-                                initial={{ width: 0 }}
-                                animate={{ width: `${elaScore}%` }}
-                                className={`h-2 rounded-full ${elaScore > 70 ? 'bg-emerald-500' : 'bg-orange-500'}`}
-                            />
-                        </div>
-                        <p className="text-xs text-zinc-400 mt-2">Error Level Analysis (ELA) score</p>
-                    </div>
+Visual Analysis Layers:
+- SegFormer: ${currentDetails?.semantic_segmentation?.heatmap_image ? 'Tampering Detected' : 'Clean'}
+- TruFor: ${currentDetails?.trufor?.heatmap_path ? 'Anomalies Found' : 'Clean'}
+`;
 
-                    <div className="bg-zinc-50 dark:bg-zinc-900 p-4 rounded-lg border border-zinc-200 dark:border-zinc-800">
-                        <div className="flex justify-between items-center mb-2">
-                            <span className="text-sm font-medium text-slate-700">Image Variance</span>
-                            <span className="text-xs font-mono text-slate-500">
-                                {details.variance?.average_diff ? details.variance.average_diff.toFixed(2) : '0.00'}
-                            </span>
-                        </div>
-                        <div className="w-full bg-slate-200 rounded-full h-2">
-                            <motion.div
-                                initial={{ width: 0 }}
-                                animate={{ width: `${varScore}%` }}
-                                className={`h-2 rounded-full ${varScore > 70 ? 'bg-indigo-500' : 'bg-orange-500'}`}
-                            />
-                        </div>
-                        <p className="text-xs text-slate-400 mt-2">Noise layout distribution</p>
-                    </div>
-                </div>
-
-                {/* Histogram Chart */}
-                {histData.length > 0 && (
-                    <div className="bg-white dark:bg-zinc-900 p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 h-64">
-                        <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider mb-4">Pixel Value Distribution (Quantization Analysis)</h4>
-                        <p className="text-xs text-zinc-400 mb-2"> periodic gaps (combing) suggest double compression/editing.</p>
-                        <ResponsiveContainer width="100%" height="80%">
-                            <BarChart data={histData}>
-                                <XAxis dataKey="bin" hide />
-                                <YAxis hide />
-                                <RechartsTooltip
-                                    contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', fontSize: '12px', color: '#fff' }}
-                                    cursor={{ fill: 'rgba(0,0,0,0.05)' }}
-                                />
-                                <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
-                            </BarChart>
-                        </ResponsiveContainer>
-                    </div>
-                )}
-            </div>
-        );
+        if (navigator.share) {
+            try {
+                await navigator.share({
+                    title: 'VeriDoc Report',
+                    text: shareText,
+                });
+            } catch (err) {
+                // User cancelled or failed
+            }
+        } else {
+            // Desktop Fallback: Copy formatting text to clipboard
+            try {
+                await navigator.clipboard.writeText(shareText.trim());
+                setIsCopied(true);
+                setTimeout(() => setIsCopied(false), 2000);
+            } catch (err) {
+                console.error("Failed to copy", err);
+            }
+        }
     };
 
-    const renderStructuralMetrics = (details) => {
-        const hasMetadata = details.metadata && Object.keys(details.metadata).length > 0;
-        const eofCount = details.eof_count || 1;
 
-        return (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-4 bg-zinc-50 dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800 flex flex-col items-center text-center">
-                    <Fingerprint className="w-8 h-8 text-indigo-500 mb-2" />
-                    <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Metadata</span>
-                    <span className={`text-xs px-2 py-1 rounded-full mt-1 ${hasMetadata ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'}`}>
-                        {hasMetadata ? "Present" : "Missing"}
-                    </span>
-                </div>
-                <div className="p-4 bg-zinc-50 dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800 flex flex-col items-center text-center">
-                    <FileType className="w-8 h-8 text-indigo-500 mb-2" />
-                    <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Structure</span>
-                    <span className={`text-xs px-2 py-1 rounded-full mt-1 ${eofCount === 1 ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400' : 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400'}`}>
-                        {eofCount === 1 ? "Standard EOF" : `${eofCount} EOF Markers`}
-                    </span>
-                </div>
-                <div className="p-4 bg-zinc-50 dark:bg-zinc-900 rounded-lg border border-zinc-200 dark:border-zinc-800 flex flex-col items-center text-center">
-                    <Search className="w-8 h-8 text-indigo-500 mb-2" />
-                    <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Content</span>
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">Parsable</span>
-                </div>
-            </div>
-        );
+    // --- Metrics Restoration ---
+    // 1. Histogram Data
+    const histData = currentDetails?.quantization?.histogram_values?.map((val, idx) => ({ bin: idx, count: val })) || [];
+
+    // 2. ELA & Variance Scores
+    const elaScore = Math.max(0, 100 - (currentDetails?.ela?.max_difference || 0));
+    const varScore = Math.max(0, 100 - ((currentDetails?.variance?.average_diff || 0) * 10));
+
+    // 3. Flags (Merge AI + Report)
+    const localFlags = new Set(report.flags || []);
+    const uniqueAiIssues = aiIssues.filter(issue => !localFlags.has(issue));
+    const allFlags = [...Array.from(localFlags), ...uniqueAiIssues];
+
+
+    // Animation Variants
+    const containerVariants = {
+        hidden: { opacity: 0 },
+        visible: {
+            opacity: 1,
+            transition: { staggerChildren: 0.1 }
+        }
     };
-
-    const renderSignatures = (signatures) => {
-        if (!signatures || signatures.length === 0) return null;
-
-        return (
-            <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 overflow-hidden mb-6">
-                <div className="px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between bg-zinc-50 dark:bg-zinc-900">
-                    <div className="flex items-center gap-2">
-                        <Fingerprint className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                        <h3 className="font-semibold text-zinc-800 dark:text-zinc-100">Digital Signatures</h3>
-                    </div>
-                    <span className="bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs font-bold px-2 py-1 rounded-full">
-                        {signatures.length} Found
-                    </span>
-                </div>
-                <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
-                    {signatures.map((sig, idx) => (
-                        <div key={idx} className="p-4 flex items-start gap-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-                            <div className={`mt-1 p-2 rounded-full ${sig.valid && sig.trusted && !sig.revoked ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400' : 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400'}`}>
-                                {sig.valid && sig.trusted && !sig.revoked ? <Check className="w-5 h-5" /> : <X className="w-5 h-5" />}
-                            </div>
-                            <div className="flex-1">
-                                <h4 className="font-semibold text-zinc-900 dark:text-zinc-100">{sig.field}</h4>
-                                <div className="text-sm text-zinc-500 dark:text-zinc-400 mt-1 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-medium text-slate-700">Integrity:</span>
-                                        {sig.intact ? <span className="text-emerald-600">Intact</span> : <span className="text-red-600 font-bold">Broken</span>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-medium text-slate-700">Trust:</span>
-                                        {sig.trusted ? <span className="text-emerald-600">Trusted Root</span> : <span className="text-orange-500 font-bold">Untrusted/Self-Signed</span>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-medium text-slate-700">Revocation:</span>
-                                        {!sig.revoked ? <span className="text-emerald-600">Good</span> : <span className="text-red-600 font-bold">Revoked</span>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-medium text-slate-700">Time:</span>
-                                        <span>{sig.signing_time}</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        );
+    const itemVariants = {
+        hidden: { opacity: 0, y: 10 },
+        visible: { opacity: 1, y: 0 }
     };
 
     return (
         <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-7xl mx-auto"
+            variants={containerVariants}
+            initial="hidden"
+            animate="visible"
+            className="w-full max-w-[1400px] mx-auto p-4 sm:p-6 lg:p-8"
         >
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                {/* Main Content Area */}
-                <div className="lg:col-span-8 space-y-6">
+            <Lightbox
+                isOpen={showLightbox}
+                onClose={() => setShowLightbox(false)}
+                data={visualData}
+                activeLayer={activeLayer}
+                setActiveLayer={setActiveLayer}
+            />
 
-                    {/* Header Card */}
-                    <div className={`relative rounded-xl shadow-lg border p-8 overflow-hidden ${isSuspicious ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'}`}>
-                        {/* Background Decoration */}
-                        <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-gradient-to-br from-transparent to-current opacity-5 rounded-full pointer-events-none text-brand-500" />
+            <div className="grid grid-cols-12 gap-6">
 
-                        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10">
-                            {/* Header content unchanged... */}
-                            {/* Re-rendering Header Card Content for Context (abbreviated in replacement) */}
-                            <div className="flex items-center gap-5">
-                                <motion.div
-                                    initial={{ scale: 0 }}
-                                    animate={{ scale: 1 }}
-                                    className={`p-4 rounded-full shadow-md ${isSuspicious ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' : 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'}`}
-                                >
-                                    {isSuspicious ? <ShieldAlert className="w-10 h-10" /> : <ShieldCheck className="w-10 h-10" />}
-                                </motion.div>
-                                <div>
-                                    <h2 className={`text-3xl font-bold tracking-tight ${isSuspicious ? 'text-red-900 dark:text-red-400' : 'text-zinc-900 dark:text-zinc-50'}`}>
-                                        {isSuspicious ? "Tampering Detected" : "Verified Authentic"}
-                                    </h2>
-                                    <div className="flex items-center gap-2 text-sm font-medium mt-1">
-                                        <div className={`w-2 h-2 rounded-full ${isSuspicious ? 'bg-red-500' : 'bg-emerald-500'}`} />
-                                        <span className="text-zinc-500 dark:text-zinc-400 capitalize">{modelName.replace(/-/g, ' ')} Forensic Verdict</span>
-                                    </div>
+                {/* --- ROW 1: Verdict & Visual Lab --- */}
+
+                {/* 1. Verdict Card */}
+                <motion.div variants={itemVariants} className={`${verdictSpan} flex flex-col gap-6`}>
+                    <div className={`flex-1 rounded-3xl p-8 border shadow-lg relative overflow-hidden flex flex-col items-center justify-center text-center ${isSuspicious ? 'bg-red-50/50 dark:bg-red-900/10 border-red-100 dark:border-red-900/30' : 'bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'}`}>
+                        {/* Status Badge */}
+                        <div className={`absolute top-6 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider border ${isSuspicious ? 'bg-white text-red-600 border-red-200' : 'bg-zinc-50 dark:bg-zinc-800 text-emerald-600 dark:text-emerald-400 border-zinc-200 dark:border-zinc-700'}`}>
+                            {isSuspicious ? "Tampering Detected" : "Integrity Verified"}
+                        </div>
+
+                        <ScoreRing score={aiScore} isSuspicious={isSuspicious} />
+
+                        <div className="mt-6 space-y-2">
+                            <h2 className="text-xl font-bold text-zinc-800 dark:text-zinc-100">
+                                {isSuspicious ? "Document Altered" : "Authentic Document"}
+                            </h2>
+                            <p className="text-sm text-zinc-500 dark:text-zinc-400 max-w-xs mx-auto">
+                                Analysis by <span className="font-semibold text-zinc-700 dark:text-zinc-300 capitalize">{modelName.replace(/-/g, ' ')}</span> completed with {isSuspicious ? 'critical' : 'no'} findings.
+                            </p>
+                        </div>
+
+                        {/* Quick Actions */}
+                        <div className="mt-8 grid grid-cols-2 gap-3 w-full max-w-sm">
+                            <button onClick={handleShare} className="flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors">
+                                {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Share2 className="w-3.5 h-3.5" />}
+                                {isCopied ? 'Copied Summary!' : 'Share Report'}
+                            </button>
+                            <button onClick={handleExportPDF} disabled={isExporting} className="flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50">
+                                {isExporting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                {isExporting ? 'Generating...' : 'Export PDF'}
+                            </button>
+                        </div>
+                    </div>
+                </motion.div>
+
+                {/* 2. Visual Lab (Conditional) */}
+                {hasVisuals && (
+                    <motion.div variants={itemVariants} className="col-span-12 lg:col-span-8 h-[650px] rounded-3xl border border-zinc-200 dark:border-zinc-800 bg-zinc-100 dark:bg-zinc-950 shadow-inner overflow-hidden flex flex-col relative group">
+                        {/* Header Overlay */}
+                        <div className="absolute top-0 left-0 right-0 p-4 z-20 flex justify-between items-start pointer-events-none">
+                            <div className="flex flex-col gap-2 pointer-events-auto">
+                                <div className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/20 shadow-sm flex items-center gap-2 w-fit">
+                                    <ScanEye className="w-4 h-4 text-zinc-500" />
+                                    <span className="text-xs font-bold text-zinc-700 dark:text-zinc-200">Visual Lab v2.0</span>
                                 </div>
-                            </div>
-
-                            <div className="flex items-center gap-6">
-                                <div className="text-right">
-                                    <div className={`text-5xl font-black tabular-nums tracking-tight ${isSuspicious ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
-                                        {displayScore}
+                                {/* Image Selector */}
+                                {hasEmbedded && embeddedImages.length > 1 && (
+                                    <div className="flex gap-1 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md p-1 rounded-lg border border-white/20 shadow-sm">
+                                        {embeddedImages.map((img, idx) => (
+                                            <button
+                                                key={idx}
+                                                onClick={() => setSelectedImageIndex(idx)}
+                                                className={`px-2 py-1 rounded-md text-[10px] font-bold transition-all ${selectedImageIndex === idx ? 'bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900' : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                                            >
+                                                Img {idx + 1}
+                                            </button>
+                                        ))}
                                     </div>
-                                    <div className="text-xs font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mt-1">Trust Score</div>
-
-                                    {reasoning?.score_breakdown && (
-                                        <div className="mt-2 text-[10px] text-zinc-500 dark:text-zinc-400 text-right opacity-80">
-                                            {Object.entries(reasoning.score_breakdown).map(([key, val]) => (
-                                                <div key={key}>{key}: <span className="font-mono font-semibold">{val}</span></div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-
-                                {!isSuspicious && (
-                                    <motion.div
-                                        initial={{ opacity: 0, rotate: -20 }}
-                                        animate={{ opacity: 1, rotate: 0 }}
-                                        transition={{ delay: 0.5, type: "spring", stiffness: 200 }}
-                                        className="hidden md:flex flex-col items-center justify-center w-20 h-20 rounded-full border-4 border-emerald-100 text-emerald-600 bg-emerald-50"
-                                    >
-                                        <Check className="w-8 h-8 stroke-[3]" />
-                                        <span className="text-[0.6rem] font-bold uppercase tracking-widest mt-1">Safe</span>
-                                    </motion.div>
                                 )}
                             </div>
-                        </div>
-                    </div>
 
-                    {/* AI Reasoning Section */}
-                    <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 overflow-hidden group hover:shadow-md transition-shadow">
-                        <div className="bg-zinc-50 dark:bg-zinc-900 px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                                <Activity className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                                <h3 className="font-semibold text-zinc-800 dark:text-zinc-100">Agentic Reasoning Details</h3>
+                            {/* Zoom Controls Overlay */}
+                            <div className="bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md p-1 rounded-lg border border-white/20 shadow-sm flex flex-col gap-1 pointer-events-auto">
+                                <button onClick={handleZoomIn} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-500"><ZoomIn className="w-4 h-4" /></button>
+                                <button onClick={handleMaximize} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-indigo-500 bg-indigo-50 dark:bg-indigo-900/20" title="Pop-Out / Fullscreen"><Maximize className="w-4 h-4" /></button>
+                                <button onClick={handleZoomOut} className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-500"><ZoomOut className="w-4 h-4" /></button>
                             </div>
                         </div>
-                        <div className="p-6">
-                            <div className="prose prose-zinc dark:prose-invert max-w-none">
-                                <p className="leading-relaxed text-zinc-700 dark:text-zinc-300 text-lg">{primaryText}</p>
+
+                        {/* Draggable Image Area (Flex Grow) */}
+                        <div className="flex-1 w-full flex items-center justify-center cursor-grab active:cursor-grabbing overflow-hidden p-6 bg-zinc-100/50 dark:bg-black/20">
+                            <motion.div
+                                drag={zoomLevel > 1}
+                                dragConstraints={containerRef}
+                                className="relative shadow-2xl inline-block"
+                                animate={{ scale: zoomLevel }}
+                                transition={{ type: 'spring', damping: 20 }}
+                            >
+                                <img
+                                    src={`http://localhost:8000/static/uploads/${currentFilename}`}
+                                    alt="Document"
+                                    className="block max-h-[420px] w-auto object-contain pointer-events-none rounded-lg"
+                                />
+                                {/* Overlays */}
+                                {activeLayer === 'heatmap' && currentDetails?.semantic_segmentation?.heatmap_image && (
+                                    <img src={currentDetails.semantic_segmentation.heatmap_image} className="absolute inset-0 w-full h-full object-contain pointer-events-none z-10" />
+                                )}
+                                {activeLayer === 'trufor' && currentDetails?.trufor?.heatmap_path && (
+                                    <img src={`http://localhost:8000/static/uploads/${currentDetails.trufor.heatmap_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-90 z-10" />
+                                )}
+                                {activeLayer === 'ela' && currentDetails?.ela?.ela_image_path && (
+                                    <img src={`http://localhost:8000/static/uploads/${currentDetails.ela.ela_image_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90 z-10" />
+                                )}
+                                {activeLayer === 'noise' && currentDetails?.noise_analysis?.noise_map_path && (
+                                    <img src={`http://localhost:8000/static/uploads/${currentDetails.noise_analysis.noise_map_path}`} className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90 z-10" />
+                                )}
+                                {activeLayer === 'ai_analysis' && boundingBoxes.map((box, idx) => {
+                                    const [ymin, xmin, ymax, xmax] = box.box_2d;
+                                    return (
+                                        <div key={idx} className="absolute border-2 border-red-500 bg-red-500/10 z-20" style={{ top: `${ymin / 10}%`, left: `${xmin / 10}%`, height: `${(ymax - ymin) / 10}%`, width: `${(xmax - xmin) / 10}%` }}></div>
+                                    );
+                                })}
+                            </motion.div>
+                        </div>
+
+                        {/* Footer Controls (Static) */}
+                        <div className="p-4 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-col items-center justify-center gap-3 z-30">
+                            {/* Context Text */}
+                            <div className="text-zinc-500 dark:text-zinc-400 text-xs font-medium text-center h-4">
+                                {activeLayer === 'original' && "Original Source Document"}
+                                {activeLayer === 'heatmap' && "SegFormer: Red indicates manipulated regions (Splice/Copy-Move)."}
+                                {activeLayer === 'trufor' && "TruFor: Sensor Noise analysis. Violet/Red indicates alien content."}
+                                {activeLayer === 'ela' && "Error Level Analysis: irregular white noise suggests resaving."}
+                                {activeLayer === 'noise' && "Noise Variance: inconsistent grain patterns reveal anomalies."}
+                                {activeLayer === 'ai_analysis' && `${modelName.replace(/-/g, ' ')} Vision: AI detected bounding boxes.`}
                             </div>
 
-                            {/* Toggle Details */}
-                            {aiSummary && aiDetail && (
-                                <div className="mt-6 pt-4 border-t border-zinc-100 dark:border-zinc-800">
+                            {/* Switcher */}
+                            <div className="bg-zinc-100 dark:bg-zinc-800 p-1 rounded-xl flex gap-1">
+                                {['original', 'heatmap', 'trufor', 'ela', 'noise', 'ai_analysis'].map(layer => (
                                     <button
-                                        onClick={() => setShowFullReasoning(!showFullReasoning)}
-                                        className="text-sm font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 flex items-center gap-2 group-hover:underline"
+                                        key={layer}
+                                        onClick={() => setActiveLayer(layer)}
+                                        className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all ${activeLayer === layer ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'}`}
                                     >
-                                        {showFullReasoning ? "Hide Technical Analysis" : "Inspect Full Logic"}
-                                        <ChevronRight className={`w-4 h-4 transition-transform ${showFullReasoning ? 'rotate-90' : ''}`} />
+                                        {layer === 'heatmap' ? 'SegFormer' : layer === 'ai_analysis' ? 'Vision AI' : layer.charAt(0).toUpperCase() + layer.slice(1)}
                                     </button>
-
-                                    {showFullReasoning && (
-                                        <motion.div
-                                            initial={{ opacity: 0, height: 0 }}
-                                            animate={{ opacity: 1, height: 'auto' }}
-                                            className="mt-4 p-5 bg-zinc-950 dark:bg-black rounded-xl text-sm text-zinc-300 font-mono whitespace-pre-line shadow-inner border border-zinc-900 dark:border-zinc-800"
-                                        >
-                                            {aiDetail}
-                                        </motion.div>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Technical Observations */}
-                    {allFlags.length > 0 && (
-                        <div className={`rounded-xl border overflow-hidden ${isSuspicious ? 'bg-red-50 dark:bg-red-900/10 border-red-100 dark:border-red-900/20' : 'bg-zinc-50 dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800'}`}>
-                            <div className="px-6 py-4 flex items-center gap-2">
-                                <AlertCircle className={`w-5 h-5 ${isSuspicious ? 'text-red-600 dark:text-red-400' : 'text-zinc-500'}`} />
-                                <h3 className={`font-semibold ${isSuspicious ? 'text-red-900 dark:text-red-400' : 'text-zinc-700 dark:text-zinc-300'}`}>
-                                    {isSuspicious ? "Critical Anomalies Detected" : "Technical Observations"}
-                                </h3>
-                            </div>
-
-                            {!isSuspicious && (
-                                <div className="px-6 py-2 bg-zinc-100/50 dark:bg-zinc-800/50 text-xs text-zinc-500 dark:text-zinc-400 border-t border-b border-zinc-200/50 dark:border-zinc-700/50">
-                                    Non-critical findings typically found in benign documents.
-                                </div>
-                            )}
-
-                            <div className="p-2">
-                                {allFlags.map((flag, idx) => (
-                                    <div key={idx} className={`mx-2 my-1 px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-3 ${isSuspicious ? 'bg-white dark:bg-zinc-950 text-red-800 dark:text-red-300 shadow-sm' : 'bg-white dark:bg-zinc-950 text-zinc-600 dark:text-zinc-400 border border-zinc-100 dark:border-zinc-800'}`}>
-                                        <div className={`w-1.5 h-1.5 rounded-full ${isSuspicious ? 'bg-red-500' : 'bg-indigo-400'}`} />
-                                        {flag}
-                                    </div>
                                 ))}
                             </div>
                         </div>
-                    )}
+                    </motion.div>
+                )}
 
-                    {/* NEW: Digital Signatures Section */}
-                    {report.details?.signatures && renderSignatures(report.details.signatures)}
+                {/* --- ROW 2: Key Findings & Signatures --- */}
 
-                    {/* NEW: Visual Evidence Layer (Heatmap/ELA) */}
-                    {(pipeline_used === 'visual' || (report.details?.analyzed_images && report.details.analyzed_images.length > 0)) && (() => {
-                        // ... logic for visual layer ...
-                        // Copying existing logic from original file to maintain it
-                        let currentDetails = report.details;
-                        let currentFilename = data.filename;
-
-                        const embeddedImages = report.details?.analyzed_images || [];
-                        const hasEmbedded = embeddedImages.length > 0;
-
-                        if (hasEmbedded) {
-                            const selected = embeddedImages[selectedImageIndex] || embeddedImages[0];
-                            currentDetails = selected.visual_report.details;
-                            currentFilename = selected.filename;
-                        }
-
-                        return (
-                            <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-                                {/* ... Visual Forensics Lab Header & Content ... */}
-                                <div className="px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 flex flex-col md:flex-row items-center justify-between bg-zinc-700 dark:bg-black text-white gap-4">
-                                    <div className="flex items-center gap-4">
-                                        <div className="flex items-center gap-2">
-                                            <Eye className="w-5 h-5 text-brand-400" />
-                                            <h3 className="font-semibold">Visual Forensics Lab</h3>
-                                        </div>
-                                        {hasEmbedded && embeddedImages.length > 1 && (
-                                            <div className="flex bg-zinc-600/50 rounded-lg p-1 gap-1">
-                                                {embeddedImages.map((img, idx) => (
-                                                    <button
-                                                        key={idx}
-                                                        onClick={() => setSelectedImageIndex(idx)}
-                                                        className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${selectedImageIndex === idx ? 'bg-indigo-500 text-white shadow-sm' : 'text-zinc-300 hover:text-white'}`}
-                                                    >
-                                                        Image {idx + 1}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        )}
+                {/* 3. Key Findings (Expands if Signatures Missing) */}
+                <motion.div variants={itemVariants} className={`${keyFindingsSpan} h-full`}>
+                    <MetricCard title="Key Findings" icon={FileSearch} className="h-full">
+                        <div className="flex flex-col h-full gap-4">
+                            {/* Key Findings List */}
+                            <div className="flex-1">
+                                {aiIssues.length > 0 ? (
+                                    <div className="bg-zinc-50 dark:bg-zinc-800/50 p-4 rounded-xl border border-zinc-100 dark:border-zinc-800">
+                                        <ul className="space-y-2">
+                                            {aiIssues.map((issue, idx) => (
+                                                <li key={idx} className="flex items-start gap-2 text-sm text-zinc-700 dark:text-zinc-200">
+                                                    <span className="mt-1.5 w-1 h-1 rounded-full bg-red-500 shrink-0" />
+                                                    {issue}
+                                                </li>
+                                            ))}
+                                        </ul>
                                     </div>
-                                    <div className="flex bg-zinc-600/50 rounded-lg p-1 gap-1 flex-wrap">
-                                        {['original', 'heatmap', 'trufor', 'ela', 'noise', 'ai_analysis'].map(layer => {
-                                            let label = 'Original';
-                                            if (layer === 'heatmap') label = 'SegFormer';
-                                            if (layer === 'trufor') label = 'TruFor (Sensor)';
-                                            if (layer === 'ela') label = 'ELA';
-                                            if (layer === 'noise') label = 'Noise';
-                                            if (layer === 'ai_analysis') label = 'AI Vision';
-
-                                            return (
-                                                <button
-                                                    key={layer}
-                                                    onClick={() => setActiveLayer(layer)}
-                                                    className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${activeLayer === layer ? 'bg-indigo-500 text-white shadow-sm' : 'text-zinc-300 hover:text-white'}`}
-                                                >
-                                                    {label}
-                                                </button>
-                                            );
-                                        })}
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center h-24 text-zinc-400 text-sm">
+                                        <Check className="w-5 h-5 mb-2 text-emerald-500" />
+                                        <span>No critical anomalies flagged.</span>
                                     </div>
-                                </div>
+                                )}
+                            </div>
 
-                                <div className="p-6 bg-zinc-50 dark:bg-zinc-950 flex flex-col items-center">
-                                    {/* Text Description of Layer */}
-                                    <div className="w-full mb-4">
-                                        {activeLayer === 'heatmap' && (
-                                            <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                                                <span className="inline-block w-3 h-3 bg-red-500 rounded-full mx-1"></span> <span className="font-semibold text-zinc-800 dark:text-zinc-200">SegFormer Analysis</span>: Red areas indicate high probability of digital tampering (Splice/Copy-Move).
-                                            </p>
-                                        )}
-                                        {activeLayer === 'ela' && (
-                                            <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                                                Highlights compression artifacts. White noise should be uniform. Bright clusters indicate resaved regions.
-                                            </p>
-                                        )}
-                                        {activeLayer === 'trufor' && (
-                                            <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                                                <span className="font-semibold text-blue-600 dark:text-blue-400">TruFor Sensor Analysis</span>: Analyzes camera sensor noise patterns. High-confidence forgeries appear <span className="text-red-600 dark:text-red-400 font-bold">Red</span>.
-                                            </p>
-                                        )}
-                                        {activeLayer === 'noise' && (
-                                            <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                                                <span className="font-semibold text-orange-600 dark:text-orange-400">High Frequency Noise Map</span>: Analyzes local variance. Inconsistencies in grain/noise often reveal spliced content.
-                                            </p>
-                                        )}
-                                        {activeLayer === 'ai_analysis' && (
-                                            <p className="text-zinc-600 dark:text-zinc-400 text-sm">
-                                                <span className="font-semibold text-indigo-600 dark:text-indigo-400 capitalize">{modelName.replace(/-/g, ' ')} Vision</span>: AI-detected anomalies. Red boxes indicate specific regions flagged by the model.
-                                            </p>
-                                        )}
+                            {/* View Detailed Analysis Toggle */}
+                            <div className="mt-auto pt-4 border-t border-zinc-100 dark:border-zinc-800">
+                                <details className="group">
+                                    <summary className="flex items-center gap-2 text-xs font-bold text-zinc-500 cursor-pointer hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors list-none">
+                                        <Activity className="w-3 h-3" />
+                                        <span>VIEW DETAILED ANALYSIS</span>
+                                        <ChevronRight className="w-3 h-3 group-open:rotate-90 transition-transform" />
+                                    </summary>
+                                    <div className="mt-3 p-3 bg-zinc-50 dark:bg-zinc-900 rounded-lg text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed border border-zinc-100 dark:border-zinc-800">
+                                        {aiDetail || "Analysis logic initialized. No specific anomalies flagged by the primary reasoning engine."}
                                     </div>
+                                </details>
+                            </div>
+                        </div>
+                    </MetricCard>
+                </motion.div>
 
-                                    {/* ... Image Container ... */}
-                                    {/* Reusing container logic implies abbreviated block here for brevity if it was large, but I will provide full implementation of image container */}
-                                    <div className="flex gap-2 mb-2 w-full justify-end px-4">
-                                        <button onClick={handleZoomOut} className="p-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400" title="Zoom Out"><ZoomOut className="w-4 h-4" /></button>
-                                        <span className="text-xs font-mono py-2 text-zinc-500 dark:text-zinc-400">{Math.round(zoomLevel * 100)}%</span>
-                                        <button onClick={handleZoomIn} className="p-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400" title="Zoom In"><ZoomIn className="w-4 h-4" /></button>
-                                        <button onClick={handleResetZoom} className="p-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-400" title="Reset"><Maximize className="w-4 h-4" /></button>
-                                    </div>
-
-                                    <div
-                                        className="relative rounded-lg overflow-hidden border border-zinc-300 dark:border-zinc-700 shadow-xl max-w-full inline-block bg-zinc-100 dark:bg-zinc-900 cursor-move"
-                                        ref={containerRef}
-                                        style={{ height: '600px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                                    >
-                                        {/* Image Logic same as before */}
-                                        <motion.div
-                                            drag={zoomLevel > 1}
-                                            dragConstraints={containerRef}
-                                            className="relative"
-                                            animate={{ scale: zoomLevel }}
-                                            transition={{ type: 'spring', damping: 20 }}
-                                        >
-                                            <img
-                                                src={`http://localhost:8000/static/uploads/${currentFilename}`}
-                                                alt="Document"
-                                                className="block max-h-[580px] w-auto object-contain pointer-events-none"
-                                            />
-                                            {activeLayer === 'heatmap' && currentDetails?.semantic_segmentation?.heatmap_image && (
-                                                <img src={currentDetails.semantic_segmentation.heatmap_image} alt="Forgery Heatmap" className="absolute inset-0 w-full h-full object-contain pointer-events-none" style={{ zIndex: 10 }} />
-                                            )}
-                                            {activeLayer === 'trufor' && currentDetails?.trufor?.heatmap_path && (
-                                                <img src={`http://localhost:8000/static/uploads/${currentDetails.trufor.heatmap_path}`} alt="TruFor Analysis" className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-normal opacity-90" style={{ zIndex: 10 }} />
-                                            )}
-                                            {activeLayer === 'ela' && currentDetails?.ela?.ela_image_path && (
-                                                <img src={`http://localhost:8000/static/uploads/${currentDetails.ela.ela_image_path}`} alt="ELA Analysis" className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90" style={{ zIndex: 10 }} />
-                                            )}
-                                            {activeLayer === 'noise' && currentDetails?.noise_analysis?.noise_map_path && (
-                                                <img src={`http://localhost:8000/static/uploads/${currentDetails.noise_analysis.noise_map_path}`} alt="Noise Analysis" className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-screen opacity-90" style={{ zIndex: 10 }} />
-                                            )}
-                                            {activeLayer === 'ai_analysis' && boundingBoxes.map((box, idx) => {
-                                                const [ymin, xmin, ymax, xmax] = box.box_2d;
-                                                return (
-                                                    <div key={idx} className="absolute border-2 border-red-500 bg-red-500/10 z-20 group" style={{ top: `${ymin / 10}%`, left: `${xmin / 10}%`, height: `${(ymax - ymin) / 10}%`, width: `${(xmax - xmin) / 10}%` }}>
-                                                        <div className="hidden group-hover:block absolute -top-8 left-0 bg-slate-900 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-30">{box.label || "Anomaly"}</div>
+                {/* 4. Signature Vault (Conditional) */}
+                {hasSignatures && (
+                    <motion.div variants={itemVariants} className="col-span-12 lg:col-span-6 h-full">
+                        <MetricCard title="Digital Signatures" icon={Fingerprint} className="h-full" noPadding>
+                            {report.details?.signatures?.length > 0 ? (
+                                <div className="divide-y divide-zinc-100 dark:divide-zinc-800 max-h-[300px] overflow-y-auto">
+                                    {report.details.signatures.map((sig, idx) => (
+                                        <div key={idx} className="p-4 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors flex flex-col gap-3">
+                                            {/* Top Row: Icon + Name + Status */}
+                                            <div className="flex items-start justify-between">
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`p-2.5 rounded-full ${sig.valid && sig.trusted ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'}`}>
+                                                        {sig.valid && sig.trusted ? <ShieldCheck className="w-5 h-5" /> : <ShieldAlert className="w-5 h-5" />}
                                                     </div>
-                                                );
-                                            })}
-                                        </motion.div>
+                                                    <div>
+                                                        <div className="font-bold text-sm text-zinc-800 dark:text-zinc-100">{sig.signer_name || sig.field}</div>
+                                                        <div className="text-xs text-zinc-500 font-mono">{sig.fingerprint || sig.field}</div>
+                                                    </div>
+                                                </div>
+                                                <div className="flex flex-col items-end gap-1.5">
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${sig.valid ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                                                        {sig.valid ? "Valid" : "Invalid"}
+                                                    </span>
+                                                    <span className="text-[10px] text-zinc-400">{sig.signing_time?.split('.')[0]}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Middle Row: Technical Details Grid */}
+                                            <div className="grid grid-cols-2 gap-2 text-xs bg-zinc-50 dark:bg-black/20 p-3 rounded-lg border border-zinc-100 dark:border-zinc-800">
+                                                <div className="flex flex-col">
+                                                    <span className="text-zinc-400 uppercase text-[9px] font-bold">Integrity</span>
+                                                    <span className={`font-semibold ${sig.intact ? 'text-zinc-700 dark:text-zinc-300' : 'text-red-600'}`}>
+                                                        {sig.intact ? "Document Unmodified" : "Tampered"}
+                                                    </span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-zinc-400 uppercase text-[9px] font-bold">Trust Chain</span>
+                                                    <span className={`font-semibold ${sig.trusted ? 'text-emerald-600' : 'text-orange-500'}`}>
+                                                        {sig.trusted ? "Root Trusted" : "Self-Signed / Unknown"}
+                                                    </span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-zinc-400 uppercase text-[9px] font-bold">Algorithm</span>
+                                                    <span className="text-zinc-600 dark:text-zinc-400 font-mono">{sig.md_algorithm?.toUpperCase() || "SHA256"}</span>
+                                                </div>
+                                                <div className="flex flex-col">
+                                                    <span className="text-zinc-400 uppercase text-[9px] font-bold">Issuer</span>
+                                                    <span className="text-zinc-600 dark:text-zinc-400 truncate" title={sig.issuer}>{sig.issuer || "Unknown CA"}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Coverage Badge */}
+                                            {sig.coverage && (
+                                                <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+                                                    <Layers className="w-3 h-3" />
+                                                    <span>Scope: {sig.coverage}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="flex flex-col items-center justify-center h-full p-12 text-zinc-400">
+                                    <Lock className="w-8 h-8 mb-2 opacity-50" />
+                                    <span className="text-sm">No Digital Signatures Found</span>
+                                </div>
+                            )}
+                        </MetricCard>
+                    </motion.div>
+                )}
+
+                {/* --- ROW 3: Signal Data & Manifest --- */}
+
+                {/* 5. Signal Analysis (Span 6) */}
+                <motion.div variants={itemVariants} className="col-span-12 lg:col-span-6 h-full">
+                    <MetricCard title="Signal Analysis" icon={BarChart3} className="h-full">
+                        <div className="space-y-6">
+                            {/* ELA & Variance Bars */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-xs font-semibold text-zinc-600 dark:text-zinc-400">
+                                        <span>Compression (ELA)</span>
+                                        <span>{Math.round(elaScore)}%</span>
+                                    </div>
+                                    <div className="h-1.5 w-full bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                                        <div className={`h-full rounded-full ${elaScore > 70 ? 'bg-emerald-500' : 'bg-orange-500'}`} style={{ width: `${elaScore}%` }} />
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <div className="flex justify-between text-xs font-semibold text-zinc-600 dark:text-zinc-400">
+                                        <span>Noise Variance</span>
+                                        <span>{varScore.toFixed(0)}%</span>
+                                    </div>
+                                    <div className="h-1.5 w-full bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                                        <div className={`h-full rounded-full ${varScore > 70 ? 'bg-indigo-500' : 'bg-orange-500'}`} style={{ width: `${varScore}%` }} />
                                     </div>
                                 </div>
                             </div>
-                        );
-                    })()}
 
-                    {/* Visual Data Section */}
-                    <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-                        <div className="px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 flex items-center gap-2">
-                            <BarChart3 className="w-5 h-5 text-zinc-500 dark:text-zinc-400" />
-                            <h3 className="font-semibold text-zinc-800 dark:text-zinc-100">ForensicMetrics Breakdown</h3>
+                            {/* Histograms */}
+                            {histData.length > 0 && (
+                                <div className="h-32 w-full mt-4 bg-zinc-50 dark:bg-black/20 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-800/50 p-2 relative">
+                                    <span className="absolute top-2 left-2 text-[10px] text-zinc-400 uppercase tracking-widest">Discrete Cosine Transform</span>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={histData}>
+                                            <Bar dataKey="count" fill="#71717a" radius={[2, 2, 0, 0]} opacity={0.6} />
+                                            <RechartsTooltip cursor={{ opacity: 0.1 }} contentStyle={{ borderRadius: '8px', border: 'none', background: '#333', color: '#fff', fontSize: '10px' }} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            )}
                         </div>
-                        <div className="p-6">
-                            {(() => {
-                                let currentDetails = report.details;
-                                if (report.details?.analyzed_images?.length > 0) {
-                                    currentDetails = report.details.analyzed_images[selectedImageIndex].visual_report.details;
-                                }
-                                return pipeline_used === 'visual' || (report.details?.analyzed_images && report.details.analyzed_images.length > 0)
-                                    ? renderVisualMetrics(currentDetails)
-                                    : renderStructuralMetrics(report.details);
-                            })()}
-                        </div>
-                    </div>
+                    </MetricCard>
+                </motion.div>
 
-                    {/* Footer / Reset */}
-                    <div className="pt-2 flex justify-end">
-                        {/* Reset button logic... */}
-                        <button
-                            onClick={async () => {
-                                if (data?.task_id) { console.log(`Resetting view for task ${data.task_id}`); }
-                                onReset();
-                            }}
-                            className="px-8 py-3 bg-zinc-700 dark:bg-zinc-100 text-white dark:text-zinc-900 rounded-xl shadow-lg hover:bg-zinc-800 dark:hover:bg-white hover:shadow-xl hover:-translate-y-0.5 transition-all font-semibold flex items-center gap-2"
-                        >
-                            <FileSearch className="w-4 h-4" />
-                            Scan Another Document
-                        </button>
-                    </div>
-                </div>
+                {/* 6. Technical Manifest (Span 6) */}
+                <motion.div variants={itemVariants} className="col-span-12 lg:col-span-6 h-full">
+                    <MetricCard title="Technical Manifest" icon={FileType} className="h-full">
+                        <div className="flex flex-col gap-4">
+                            {/* File Specs Grid */}
+                            <div className="grid grid-cols-2 gap-4 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+                                <div>
+                                    <div className="text-[10px] text-zinc-400 uppercase">MIME Type</div>
+                                    <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">application/pdf</div>
+                                </div>
+                                <div>
+                                    <div className="text-[10px] text-zinc-400 uppercase">Size</div>
+                                    <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">2.4 MB</div>
+                                </div>
+                                <div>
+                                    <div className="text-[10px] text-zinc-400 uppercase">Markers</div>
+                                    <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{report.details?.eof_count || 1} EOF</div>
+                                </div>
+                                <div>
+                                    <div className="text-[10px] text-zinc-400 uppercase">Metadata</div>
+                                    <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{report.details?.metadata ? 'Extracted' : 'Missing'}</div>
+                                </div>
+                            </div>
 
-                {/* Streamlined Sidebar */}
-                {/* ... Sidebar code ... */}
-                <div className="lg:col-span-4 space-y-6">
-                    <div className="bg-white dark:bg-zinc-900 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-800 p-6 sticky top-6">
-                        <h3 className="font-semibold text-zinc-900 dark:text-zinc-100 mb-6 flex items-center gap-2">
-                            <Layers className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                            Analysis Vector
-                        </h3>
-                        <div className="space-y-6 relative">
-                            <div className="absolute left-[15px] top-8 bottom-8 w-0.5 bg-zinc-100 dark:bg-zinc-800" />
-                            <div className="flex gap-4 relative">
-                                <div className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center flex-shrink-0 z-10 border-4 border-white dark:border-zinc-900"><GitBranch className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /></div>
-                                <div><p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Pipeline</p><p className="font-semibold text-zinc-800 dark:text-zinc-200 capitalize">{pipeline_used || 'Standard'} Mode</p></div>
-                            </div>
-                            <div className="flex gap-4 relative">
-                                <div className="w-8 h-8 rounded-full bg-emerald-100 dark:bg-emerald-900/30 flex items-center justify-center flex-shrink-0 z-10 border-4 border-white dark:border-zinc-900"><Activity className="w-4 h-4 text-emerald-600 dark:text-emerald-400" /></div>
-                                <div><p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Engine</p><p className="font-semibold text-zinc-800 dark:text-zinc-200 capitalize">{modelName.replace(/-/g, ' ')}</p></div>
-                            </div>
-                            <div className="flex gap-4 relative">
-                                <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center flex-shrink-0 z-10 border-4 border-white dark:border-zinc-900"><Lock className="w-4 h-4 text-blue-600 dark:text-blue-400" /></div>
-                                <div><p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Storage</p><p className="font-semibold text-zinc-800 dark:text-zinc-200">Google Cloud Secure</p></div>
+                            {/* Anomaly Tags */}
+                            <div>
+                                <div className="text-[10px] text-zinc-400 uppercase mb-2">Forensic Flags</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {allFlags.length > 0 ? allFlags.map((flag, i) => (
+                                        <span key={i} className="px-2.5 py-1 rounded-md text-xs font-medium border bg-red-50 border-red-100 text-red-700 dark:bg-red-900/20 dark:border-red-900 dark:text-red-400">
+                                            {flag}
+                                        </span>
+                                    )) : (
+                                        <span className="px-2.5 py-1 rounded-md text-xs font-medium border bg-emerald-50 border-emerald-100 text-emerald-700 dark:bg-emerald-900/20 dark:border-emerald-900 dark:text-emerald-400">
+                                            No Explicit Anomalies
+                                        </span>
+                                    )}
+                                </div>
                             </div>
                         </div>
-                        <div className="mt-8 pt-6 border-t border-zinc-100 dark:border-zinc-800 text-center">
-                            <p className="text-xs text-zinc-400">VeriDoc Integrity System v2.0</p>
-                        </div>
-                    </div>
-                </div>
+                    </MetricCard>
+                </motion.div>
+
+
+                {/* --- Footer Action --- */}
+                <motion.div variants={itemVariants} className="col-span-12 flex justify-center py-12">
+                    <button
+                        onClick={onReset}
+                        className="group flex items-center gap-3 px-8 py-4 bg-zinc-900 dark:bg-white text-white dark:text-black rounded-full font-bold shadow-xl hover:scale-105 hover:shadow-2xl transition-all"
+                    >
+                        <RefreshCw className="w-5 h-5 group-hover:rotate-180 transition-transform duration-500" />
+                        <span>Analyze Another Document</span>
+                    </button>
+                </motion.div>
+
             </div>
         </motion.div>
     );

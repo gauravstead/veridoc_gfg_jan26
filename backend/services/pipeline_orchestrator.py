@@ -359,8 +359,17 @@ async def analyze_cryptographic(file_path: str, callback=None):
                     # Validate with Context
                     val_status = await async_validate_pdf_signature(sig, signer_validation_context=vc)
                     
+                    # Extract Signer Details
+                    signer_name = "Unknown"
+                    issuer_name = "Unknown"
+                    if val_status.signing_cert:
+                        signer_name = val_status.signing_cert.subject.human_friendly
+                        issuer_name = val_status.signing_cert.issuer.human_friendly
+
                     status_summary = {
                         "field": sig.field_name,
+                        "signer_name": signer_name,
+                        "issuer": issuer_name,
                         "valid": val_status.valid,
                         "intact": val_status.intact,
                         "trusted": val_status.trusted,
