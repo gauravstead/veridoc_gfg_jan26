@@ -190,7 +190,8 @@ async def analyze_document(websocket: WebSocket, task_id: str):
 
         # Pipeline Determination
         await websocket.send_json({"status": "info", "message": "Determining appropriate forensic pipeline...", "step": "PIPELINE_SELECTION"})
-        pipeline_type = determine_pipeline(found_file, mime_type)
+        # BUG FIX: Pass full file_path so the orchestrator can open the file
+        pipeline_type = determine_pipeline(file_path, mime_type)
         await websocket.send_json({"status": "info", "message": f"Selected Pipeline: {pipeline_type.value}", "step": "PIPELINE_SELECTED"})
 
         # Execution
@@ -203,9 +204,9 @@ async def analyze_document(websocket: WebSocket, task_id: str):
         if pipeline_type == PipelineType.STRUCTURAL:
              report = await analyze_structural(file_path, callback=send_progress)
         elif pipeline_type == PipelineType.VISUAL:
-             report = await analyze_visual(file_path)
+             report = await analyze_visual(file_path, callback=send_progress)
         elif pipeline_type == PipelineType.CRYPTOGRAPHIC:
-             report = analyze_cryptographic(file_path)
+             report = await analyze_cryptographic(file_path, callback=send_progress)
         else:
              report = {"error": "Unsupported pipeline requested"}
         

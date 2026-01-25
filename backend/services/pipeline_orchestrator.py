@@ -311,11 +311,14 @@ async def analyze_structural(file_path: str, callback=None):
         
     return results
 
-def analyze_cryptographic(file_path: str):
+async def analyze_cryptographic(file_path: str, callback=None):
     """
     Pipeline C: Cryptographic Analysis (Signed PDFs)
     Uses pyHanko to validate signatures with Trust Store usage.
     """
+    if callback:
+        await callback("Initializing Cryptographic Engine...")
+        
     results = {
         "pipeline": "Cryptographic Analysis (Digital Signatures)",
         "score": 0.0,
@@ -325,10 +328,14 @@ def analyze_cryptographic(file_path: str):
     
     try:
         from pyhanko_certvalidator import ValidationContext
+        from pyhanko.sign.validation import async_validate_pdf_signature
         
         # 1. Setup Trust Store (Roots)
         # Assuming trust store is at ../../resources/trust_store relative to this file
         trust_store_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "trust_store")
+        
+        if callback:
+             await callback("Loading Trusted Root Certificates...")
         
         # 2. Open File
         with open(file_path, 'rb') as f:
@@ -345,30 +352,45 @@ def analyze_cryptographic(file_path: str):
             vc = ValidationContext(allow_fetching=True)
             
             for sig in r.embedded_signatures:
-                # Validate with Context
-                val_status = validation.validate_pdf_signature(sig, validation_context=vc)
-                
-                status_summary = {
-                    "field": sig.field_name,
-                    "valid": val_status.valid,
-                    "intact": val_status.intact,
-                    "trusted": val_status.trusted,
-                    "revoked": val_status.revoked,
-                    "signing_time": str(val_status.signing_time),
-                    "md_algorithm": val_status.md_algorithm,
-                    "coverage": str(val_status.coverage)
-                }
-                sig_status.append(status_summary)
-                
-                if not val_status.intact:
-                     results['flags'].append(f"CRITICAL: Signature {sig.field_name} is BROKEN (Document altered after signing)")
-                     results['score'] += 1.0 
-                elif val_status.revoked:
-                     results['flags'].append(f"CRITICAL: Certificate for {sig.field_name} has been REVOKED")
-                     results['score'] += 1.0
-                elif not val_status.trusted:
-                     results['flags'].append(f"WARNING: Signature {sig.field_name} is Untrusted (Self-Signed or Unknown Root)")
-                     results['score'] += 0.3 
+                try:
+                    if callback:
+                        await callback(f"Verifying Signature: {sig.field_name}...")
+                    
+                    # Validate with Context
+                    val_status = await async_validate_pdf_signature(sig, signer_validation_context=vc)
+                    
+                    status_summary = {
+                        "field": sig.field_name,
+                        "valid": val_status.valid,
+                        "intact": val_status.intact,
+                        "trusted": val_status.trusted,
+                        "revoked": val_status.revoked,
+                        "signing_time": str(val_status.signer_reported_dt),
+                        "md_algorithm": val_status.md_algorithm,
+                        "coverage": str(val_status.coverage)
+                    }
+                    sig_status.append(status_summary)
+                    
+                    if not val_status.intact:
+                         results['flags'].append(f"CRITICAL: Signature {sig.field_name} is BROKEN (Document altered after signing)")
+                         results['score'] += 1.0 
+                    elif val_status.revoked:
+                         results['flags'].append(f"CRITICAL: Certificate for {sig.field_name} has been REVOKED")
+                         results['score'] += 1.0
+                    elif not val_status.trusted:
+                         results['flags'].append(f"WARNING: Signature {sig.field_name} is Untrusted (Self-Signed or Unknown Root)")
+                         results['score'] += 0.3
+                         
+                except Exception as e:
+                    # Handle individual signature validation failure
+                    print(f"DEBUG: Sig mismatch/error: {e}")
+                    sig_status.append({
+                        "field": sig.field_name,
+                        "valid": False,
+                        "error": str(e),
+                        "trusted": False
+                    })
+                    results['flags'].append(f"ERROR: Could not validate signature {sig.field_name}: {str(e)}") 
 
             results['details']['signatures'] = sig_status
             results['details']['signature_count'] = len(sig_status)
@@ -381,11 +403,14 @@ def analyze_cryptographic(file_path: str):
         
     return results
 
-async def analyze_visual(file_path: str):
+async def analyze_visual(file_path: str, callback=None):
     """
     Pipeline B: Visual Analysis (Images)
     Uses ELA, Quantization Checks, and Semantic Segmentation (SegFormer).
     """
+    if callback:
+        await callback("Starting Visual Forensics Pipeline...")
+
     results = {
         "pipeline": "Visual Analysis (ELA, Quantization & Semantic)",
         "score": 0.0,
@@ -394,6 +419,8 @@ async def analyze_visual(file_path: str):
     }
     
     # 1. Error Level Analysis
+    if callback:
+        await callback("Running Error Level Analysis (ELA)...")
     ela_res = perform_ela(file_path)
     results['details']['ela'] = ela_res
     
@@ -407,6 +434,8 @@ async def analyze_visual(file_path: str):
         results['flags'].append("ELA Failed")
 
     # 2. Quantization / Histogram Analysis
+    if callback:
+        await callback("Analyzing Discrete Cosine Transform (DCT) Histograms...")
     quant_res = analyze_quantization(file_path)
     results['details']['quantization'] = quant_res
     
@@ -417,6 +446,8 @@ async def analyze_visual(file_path: str):
             
     # 3. Semantic Segmentation (SegFormer-B0)
     try:
+        if callback:
+            await callback("Engaging Neural Network (SegFormer) for splicing detection...")
         seg_res = run_tamper_detection(file_path)
         results["details"]["semantic_segmentation"] = seg_res
         
@@ -429,6 +460,8 @@ async def analyze_visual(file_path: str):
 
     # 4. Noise Variance Analysis (New Feature)
     try:
+        if callback:
+            await callback("Calculating High-Frequency Noise Variance map...")
         noise_res = perform_noise_analysis(file_path)
         results["details"]["noise_analysis"] = noise_res
     except Exception as e:
@@ -436,6 +469,9 @@ async def analyze_visual(file_path: str):
 
     # 5. TruFor Analysis (High-Fidelity Sensor Noise)
     try:
+        if callback:
+            await callback("Initializing TruFor Sensor Fingerprint Analysis...")
+            
         trufor_engine = TruForEngine()
         # Run in threadpool to avoid blocking
         loop = asyncio.get_running_loop()
@@ -502,14 +538,22 @@ def determine_pipeline(filename: str, content_type: str) -> PipelineType:
     ext = fn_lower.split('.')[-1]
     
     if ext == 'pdf':
-        # Simple heuristic for MVP: if filename contains "signed", use Crypto pipeline
-        # Otherwise default to Structural
-        if "signed" in fn_lower:
-            return PipelineType.CRYPTOGRAPHIC
+        try:
+            # Content-Based Detection for Digital Signatures
+            with open(filename, 'rb') as f:
+                r = PdfFileReader(f)
+                if len(r.embedded_signatures) > 0:
+                    return PipelineType.CRYPTOGRAPHIC
+                else:
+                    pass
+        except Exception as e:
+            # Fallback or log error if file is unreadable (Structural pipeline handles malformed)
+            pass
+
         return PipelineType.STRUCTURAL
         
     if ext in ['jpg', 'jpeg', 'png', 'tiff', 'bmp', 'webp']:
         return PipelineType.VISUAL
         
-    # Default to structural or maybe None in future, but for now Structural covers "files" generic
+    # Default to structural
     return PipelineType.STRUCTURAL

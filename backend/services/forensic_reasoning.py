@@ -79,9 +79,10 @@ def run_semantic_reasoning(gcs_uri, mime_type="application/pdf", local_report=No
             {json.dumps(context_data, indent=2)}
             
             INSTRUCTIONS FOR USING THIS DATA:
-            1. This data comes from specialized code-based forensic tools (ELA, SegFormer, Metadata Analysis).
+            1. This data comes from specialized code-based forensic tools (ELA, SegFormer, Metadata Analysis, Digital Signature Verification).
             2. Trust these metrics. If SegFormer says "Tampered", it is highly likely.
-            3. Your job is to SYNTHESIZE these technical findings with your own Visual/Semantic analysis.
+            3. **CRITICAL**: Check for "signatures" in the details. If a signature is INVALID, UNTRUSTED, or REVOKED, you MUST flag this as a severe authenticity issue.
+            4. Your job is to SYNTHESIZE these technical findings with your own Visual/Semantic analysis.
             """
 
         # 3. Define the Prompt (The one above)
