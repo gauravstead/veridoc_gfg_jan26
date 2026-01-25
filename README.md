@@ -81,12 +81,27 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
    cd veridoc_gfg_jan26/backend
    ```
 
-2. **Install Python dependencies**
+2. **Create and Activate Virtual Environment**
+   It's recommended to use a virtual environment to manage dependencies.
+   
+   **Linux/macOS:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   ```
+   
+   **Windows:**
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate
+   ```
+
+3. **Install Python dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Download TruFor model weights** (Required for visual forensics)
+4. **Download TruFor model weights** (Required for visual forensics)
    
    The TruFor model weights (~249 MB) are downloaded from the official repository:
    
@@ -102,7 +117,7 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
    
    This downloads `trufor.pth.tar` from the official [TruFor repository](https://github.com/grip-unina/TruFor) maintained by GRIP-UNINA.
 
-4. **Start the backend server**
+5. **Start the backend server**
    ```bash
    uvicorn main:app --reload
    ```
