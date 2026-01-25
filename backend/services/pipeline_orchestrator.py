@@ -427,112 +427,128 @@ async def analyze_visual(file_path: str, callback=None):
         "details": {}
     }
     
-    # 1. Error Level Analysis
-    if callback:
-        await callback("Running Error Level Analysis (ELA)...")
-    ela_res = perform_ela(file_path)
-    results['details']['ela'] = ela_res
+    loop = asyncio.get_running_loop()
     
-    if ela_res.get('status') == 'success':
-        # ELA Heuristic: High variance/mean difference implies potential editing/resaving
-        # Normal high-quality JPEGs have lower difference.
-        if ela_res['mean_difference'] > 15:
+    # Define tasks efficiently
+    # CPU-bound tasks (OpenCV) needed executors
+    
+    async def run_ela():
+        if callback: await callback("Running Error Level Analysis (ELA)...")
+        # Run in executor to avoid blocking main thread
+        return await loop.run_in_executor(None, perform_ela, file_path)
+
+    async def run_quant():
+        if callback: await callback("Analyzing DCT Histograms...")
+        return await loop.run_in_executor(None, analyze_quantization, file_path)
+    
+    async def run_segformer():
+        # SegFormer inference might be heavy, ensure it's non-blocking
+        if callback: await callback("Engaging Neural Network (SegFormer)...")
+        # Assuming run_tamper_detection is synchronous, offload it
+        return await loop.run_in_executor(None, run_tamper_detection, file_path)
+
+    async def run_noise():
+        if callback: await callback("Calculating Noise Variance...")
+        return await loop.run_in_executor(None, perform_noise_analysis, file_path)
+
+    async def run_trufor():
+        if callback: await callback("Initializing TruFor Analysis...")
+        trufor_engine = TruForEngine()
+        return await loop.run_in_executor(None, trufor_engine.analyze, file_path)
+
+    # FIRE EVERYTHING AT ONCE (Parallel Execution)
+    ela_res, quant_res, seg_res, noise_res, trufor_res = await asyncio.gather(
+        run_ela(),
+        run_quant(),
+        run_segformer(),
+        run_noise(),
+        run_trufor(),
+        return_exceptions=True # Prevent one failure from stopping others
+    )
+
+    # --- PROCESS RESULTS (Sequential Aggregation) ---
+
+    # 1. ELA
+    if isinstance(ela_res, Exception):
+        results['flags'].append(f"ELA Failed: {str(ela_res)}")
+        results['details']['ela'] = {"status": "error"}
+    else:
+        results['details']['ela'] = ela_res
+        if ela_res.get('status') == 'success' and ela_res['mean_difference'] > 15:
              results['flags'].append("High ELA Response (Potential Manipulation)")
              results['score'] += 0.4
-    else:
-        results['flags'].append("ELA Failed")
 
-    # 2. Quantization / Histogram Analysis
-    if callback:
-        await callback("Analyzing Discrete Cosine Transform (DCT) Histograms...")
-    quant_res = analyze_quantization(file_path)
-    results['details']['quantization'] = quant_res
-    
-    if quant_res.get('status') == 'success':
-        if quant_res['suspicious']:
+    # 2. Quantization
+    if isinstance(quant_res, Exception):
+        results['details']['quantization'] = {"status": "error"}
+    else:
+        results['details']['quantization'] = quant_res
+        if quant_res.get('status') == 'success' and quant_res['suspicious']:
             results['flags'].append("Suspicious Histogram (Potential Double Quantization)")
             results['score'] += 0.3
-            
-    # 3. Semantic Segmentation (SegFormer-B0)
-    try:
-        if callback:
-            await callback("Engaging Neural Network (SegFormer) for splicing detection...")
-        seg_res = run_tamper_detection(file_path)
+
+    # 3. SegFormer
+    if isinstance(seg_res, Exception):
+        results["details"]["semantic_segmentation"] = f"Model Failed: {str(seg_res)}"
+    else:
         results["details"]["semantic_segmentation"] = seg_res
-        
         if seg_res.get("is_tampered"):
              conf = seg_res.get("confidence_score", 0)
              results["flags"].append(f"Deep Learning Detection (SegFormer): Tampering Detected (Conf: {conf:.2f})")
              results["score"] += 0.6 
-    except Exception as e:
-        results["details"]["semantic_segmentation"] = f"Model Failed: {str(e)}"
 
-    # 4. Noise Variance Analysis (New Feature)
-    try:
-        if callback:
-            await callback("Calculating High-Frequency Noise Variance map...")
-        noise_res = perform_noise_analysis(file_path)
+    # 4. Noise
+    if isinstance(noise_res, Exception):
+        results["details"]["noise_analysis"] = f"Noise Map Failed: {str(noise_res)}"
+    else:
         results["details"]["noise_analysis"] = noise_res
-    except Exception as e:
-        results["details"]["noise_analysis"] = f"Noise Map Failed: {str(e)}"
 
-    # 5. TruFor Analysis (High-Fidelity Sensor Noise)
-    try:
-        if callback:
-            await callback("Initializing TruFor Sensor Fingerprint Analysis...")
-            
-        trufor_engine = TruForEngine()
-        # Run in threadpool to avoid blocking
-        loop = asyncio.get_running_loop()
-        trufor_res = await loop.run_in_executor(None, trufor_engine.analyze, file_path)
+    # 5. TruFor
+    if isinstance(trufor_res, Exception):
+        results["details"]["trufor"] = {"error": str(trufor_res)}
+    else:
+        # TruFor Result Processing (Heatmap Saving)
+        # Note: Previous implementation had huge inline code here. We must keep it.
+        # But `analyze` probably returns the heatmap ARRAY, so we need to save it here?
+        # WAIT: The previous code ran `trufor_engine.analyze` which returned a dict with 'heatmap'.
+        # We need to replicate the saving logic here because `analyze` likely doesn't save to disk itself (based on previous code).
         
         results["details"]["trufor"] = trufor_res
         
         # Save Heatmap if present
-        if trufor_res.get("heatmap") is not None:
-             import matplotlib.pyplot as plt
-             import io
-             import base64
-             
-             # Save formatted heatmap to disk for frontend
-             heatmap_arr = trufor_res["heatmap"]
-             
-             # Create a color visual (Red = Forged, Transparent = Real)
-             # Anomaly map is already confidence-weighted 0-1
-             
-             # Create RGBA
-             cmap = plt.get_cmap('jet')
-             rgba_img = cmap(heatmap_arr) # (H,W,4)
-             
-             # Set alpha logic: Transparent if score < 0.1, Opaque if high
-             alpha = heatmap_arr.copy()
-             alpha[alpha < 0.1] = 0.0
-             alpha[alpha >= 0.1] = 0.7
-             rgba_img[:, :, 3] = alpha
-             
-             # Save
-             tf_filename = os.path.basename(file_path) + ".trufor.png"
-             tf_path = os.path.join(os.path.dirname(file_path), tf_filename)
-             
-             # Convert to uint8 and save via OpenCV or PIL
-             # Use cv2 for speed (BGR expected)
-             # But matplotlib output is RGBA float 0-1.
-             # Easiest: use PIL or plt.imsave
-             
-             plt.imsave(tf_path, rgba_img)
-             
-             results["details"]["trufor"]["heatmap_path"] = tf_filename
-             # Remove raw array from JSON result to keep it light
-             del results["details"]["trufor"]["heatmap"]
-             del results["details"]["trufor"]["raw_confidence"]
-             
+        if isinstance(trufor_res, dict) and trufor_res.get("heatmap") is not None:
+             try:
+                 import matplotlib.pyplot as plt
+                 # Save formatted heatmap to disk for frontend
+                 heatmap_arr = trufor_res["heatmap"]
+                 
+                 # Create RGBA
+                 cmap = plt.get_cmap('jet')
+                 rgba_img = cmap(heatmap_arr) # (H,W,4)
+                 
+                 # Set alpha logic
+                 alpha = heatmap_arr.copy()
+                 alpha[alpha < 0.1] = 0.0
+                 alpha[alpha >= 0.1] = 0.7
+                 rgba_img[:, :, 3] = alpha
+                 
+                 # Save
+                 tf_filename = os.path.basename(file_path) + ".trufor.png"
+                 tf_path = os.path.join(os.path.dirname(file_path), tf_filename)
+                 
+                 plt.imsave(tf_path, rgba_img)
+                 
+                 results["details"]["trufor"]["heatmap_path"] = tf_filename
+                 # Remove raw array
+                 if "heatmap" in results["details"]["trufor"]: del results["details"]["trufor"]["heatmap"]
+                 if "raw_confidence" in results["details"]["trufor"]: del results["details"]["trufor"]["raw_confidence"]
+             except Exception as e:
+                 print(f"TruFor Save Error: {e}")
+
         # Integrate Score
-        if trufor_res.get("trust_score", 1.0) < 0.5:
+        if isinstance(trufor_res, dict) and trufor_res.get("trust_score", 1.0) < 0.5:
              results["flags"].append(f"TruFor Detected Anomaly (Score: {trufor_res['trust_score']:.2f})")
-             results["score"] += 0.8 # Strong signal
-             
-    except Exception as e:
-        results["details"]["trufor"] = {"error": str(e)}
+             results["score"] += 0.8
 
     # Cap score
     results['score'] = min(results['score'], 1.0)
