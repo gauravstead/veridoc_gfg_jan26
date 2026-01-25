@@ -364,9 +364,10 @@ export function ReportDashboard({ data, onReset }) {
 
                                     {/* Layer Switcher */}
                                     <div className="flex bg-slate-800 rounded-lg p-1 gap-1 flex-wrap">
-                                        {['original', 'heatmap', 'ela', 'noise', 'ai_analysis'].map(layer => {
+                                        {['original', 'heatmap', 'trufor', 'ela', 'noise', 'ai_analysis'].map(layer => {
                                             let label = 'Original';
                                             if (layer === 'heatmap') label = 'SegFormer'; // Renamed
+                                            if (layer === 'trufor') label = 'TruFor (Sensor)';
                                             if (layer === 'ela') label = 'ELA';
                                             if (layer === 'noise') label = 'Noise';
                                             if (layer === 'ai_analysis') label = 'AI Vision'; // Dynamic Label
@@ -394,6 +395,11 @@ export function ReportDashboard({ data, onReset }) {
                                         {activeLayer === 'ela' && (
                                             <p className="text-slate-600 text-sm">
                                                 Highlights compression artifacts. White noise should be uniform. Bright clusters indicate resaved regions.
+                                            </p>
+                                        )}
+                                        {activeLayer === 'trufor' && (
+                                            <p className="text-slate-600 text-sm">
+                                                <span className="font-semibold text-blue-600">TruFor Sensor Analysis</span>: Analyzes camera sensor noise patterns. High-confidence forgeries appear <span className="text-red-600 font-bold">Red</span>.
                                             </p>
                                         )}
                                         {activeLayer === 'noise' && (
@@ -444,6 +450,15 @@ export function ReportDashboard({ data, onReset }) {
                                                 src={currentDetails.semantic_segmentation.heatmap_image}
                                                 alt="Forgery Heatmap"
                                                 className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                                                style={{ zIndex: 10 }}
+                                            />
+                                        )}
+
+                                        {activeLayer === 'trufor' && currentDetails?.trufor?.heatmap_path && (
+                                            <img
+                                                src={`http://localhost:8000/static/uploads/${currentDetails.trufor.heatmap_path}`}
+                                                alt="TruFor Analysis"
+                                                className="absolute inset-0 w-full h-full object-contain pointer-events-none mix-blend-normal opacity-90"
                                                 style={{ zIndex: 10 }}
                                             />
                                         )}

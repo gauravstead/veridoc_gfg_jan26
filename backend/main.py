@@ -203,7 +203,7 @@ async def analyze_document(websocket: WebSocket, task_id: str):
         if pipeline_type == PipelineType.STRUCTURAL:
              report = await analyze_structural(file_path, callback=send_progress)
         elif pipeline_type == PipelineType.VISUAL:
-             report = analyze_visual(file_path)
+             report = await analyze_visual(file_path)
         elif pipeline_type == PipelineType.CRYPTOGRAPHIC:
              report = analyze_cryptographic(file_path)
         else:

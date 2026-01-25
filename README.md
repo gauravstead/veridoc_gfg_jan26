@@ -66,6 +66,66 @@ Executed if pipelines find ambiguous results, this layer serves as the final "Lo
 
 ---
 
+## 🚀 Setup Instructions
+
+### Prerequisites
+- Python 3.8+
+- Node.js 16+ (for frontend)
+- `wget` or `curl` (for model download)
+
+### Backend Setup
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/veridoc_gfg_jan26.git
+   cd veridoc_gfg_jan26/backend
+   ```
+
+2. **Install Python dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Download TruFor model weights** (Required for visual forensics)
+   
+   The TruFor model weights (~249 MB) are downloaded from the official repository:
+   
+   **Option A: Using bash script (Linux/Mac)**
+   ```bash
+   bash setup_models.sh
+   ```
+   
+   **Option B: Using Python script (Cross-platform)**
+   ```bash
+   python setup_models.py
+   ```
+   
+   This downloads `trufor.pth.tar` from the official [TruFor repository](https://github.com/grip-unina/TruFor) maintained by GRIP-UNINA.
+
+4. **Start the backend server**
+   ```bash
+   uvicorn main:app --reload
+   ```
+
+### Frontend Setup
+
+1. **Navigate to frontend directory**
+   ```bash
+   cd ../frontend
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Start the development server**
+   ```bash
+   npm run dev
+   ```
+
+---
+
 ## 💻 Technical Specifications & Libraries
 
 VeriDoc leverages a robust Python ecosystem for deterministic analysis and API orchestration.

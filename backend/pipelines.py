@@ -1,4 +1,5 @@
 from visual_model.inference import run_tamper_detection
+from forensics.trufor_engine import TruForEngine
 import os
 from enum import Enum
 from pypdf import PdfReader
@@ -242,10 +243,8 @@ async def analyze_structural(file_path: str, callback=None):
                             fp.write(img_obj.data)
                             
                         # RUN VISUAL PIPELINE ON EXTRACTED CONTENT
-                        # CRITICAL FIX: Offload heavy lifting to thread to avoid blocking Event Loop
-                        # Use run_in_executor for broader Python compatibility (pre-3.9)
-                        loop = asyncio.get_running_loop()
-                        visual_report = await loop.run_in_executor(None, analyze_visual, temp_img_path)
+                        # analyze_visual is now async, so we await it directly
+                        visual_report = await analyze_visual(temp_img_path)
                         
                         # Store comprehensive results for this image
                         # We inject the temp filename so the frontend knows what to fetch
@@ -371,7 +370,7 @@ def analyze_cryptographic(file_path: str):
         
     return results
 
-def analyze_visual(file_path: str):
+async def analyze_visual(file_path: str):
     """
     Pipeline B: Visual Analysis (Images)
     Uses ELA, Quantization Checks, and Semantic Segmentation (SegFormer).
@@ -425,6 +424,61 @@ def analyze_visual(file_path: str):
         results["details"]["noise_analysis"] = noise_res
     except Exception as e:
         results["details"]["noise_analysis"] = f"Noise Map Failed: {str(e)}"
+
+    # 5. TruFor Analysis (High-Fidelity Sensor Noise)
+    try:
+        trufor_engine = TruForEngine()
+        # Run in threadpool to avoid blocking
+        loop = asyncio.get_running_loop()
+        trufor_res = await loop.run_in_executor(None, trufor_engine.analyze, file_path)
+        
+        results["details"]["trufor"] = trufor_res
+        
+        # Save Heatmap if present
+        if trufor_res.get("heatmap") is not None:
+             import matplotlib.pyplot as plt
+             import io
+             import base64
+             
+             # Save formatted heatmap to disk for frontend
+             heatmap_arr = trufor_res["heatmap"]
+             
+             # Create a color visual (Red = Forged, Transparent = Real)
+             # Anomaly map is already confidence-weighted 0-1
+             
+             # Create RGBA
+             cmap = plt.get_cmap('jet')
+             rgba_img = cmap(heatmap_arr) # (H,W,4)
+             
+             # Set alpha logic: Transparent if score < 0.1, Opaque if high
+             alpha = heatmap_arr.copy()
+             alpha[alpha < 0.1] = 0.0
+             alpha[alpha >= 0.1] = 0.7
+             rgba_img[:, :, 3] = alpha
+             
+             # Save
+             tf_filename = os.path.basename(file_path) + ".trufor.png"
+             tf_path = os.path.join(os.path.dirname(file_path), tf_filename)
+             
+             # Convert to uint8 and save via OpenCV or PIL
+             # Use cv2 for speed (BGR expected)
+             # But matplotlib output is RGBA float 0-1.
+             # Easiest: use PIL or plt.imsave
+             
+             plt.imsave(tf_path, rgba_img)
+             
+             results["details"]["trufor"]["heatmap_path"] = tf_filename
+             # Remove raw array from JSON result to keep it light
+             del results["details"]["trufor"]["heatmap"]
+             del results["details"]["trufor"]["raw_confidence"]
+             
+        # Integrate Score
+        if trufor_res.get("trust_score", 1.0) < 0.5:
+             results["flags"].append(f"TruFor Detected Anomaly (Score: {trufor_res['trust_score']:.2f})")
+             results["score"] += 0.8 # Strong signal
+             
+    except Exception as e:
+        results["details"]["trufor"] = {"error": str(e)}
 
     # Cap score
     results['score'] = min(results['score'], 1.0)
